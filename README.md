@@ -22,6 +22,7 @@
 | **Before/After Preview** | 剪映对比视图 | 原图与调色结果并排实时对比 |
 | **Image Compare A/B** | 修图软件对比模式 | SLIDE 滑动逐帧揭示 A/B，A/B 一键切换，面板内嵌预览 |
 | **Set / Get Image Variable** | 跨节点传递图片 | 全局图像变量：Set 写入（image 透传）、Get 按 key 读取，大型工作流免拉长线 |
+| **Label** | 工作流注释 / 分区说明 | 浮动文字标签：双击就地改文案（回车或点外部生效），字号 / 字体 / 字色 / 对齐 / 背景（含 8 位 HEX 半透明）/ 内边距 / 圆角 / 角度全可调，支持 `\n` 换行 |
 
 > **接口排序规范**：本包所有节点统一遵循——含 `image` 与 `mask` 输入时，**image 在上、mask 在下**；同时含 `foreground` / `background` 时，**foreground 在上、background 在下**。避免交叉连线，提升工作流可读性。
 
@@ -52,12 +53,13 @@ ComfyUI/custom_nodes/ComfyUI-ItsGemTools/
     ├── itsgemtools_auto_refresh.js
     ├── itsgemtools_compare.js
     ├── itsgemtools_appearance.js
-    └── itsgemtools_i18n.js
+    ├── itsgemtools_i18n.js
+    └── itsgemtools_label.js
 ```
 
 **然后重启 ComfyUI**（前端扩展需重启加载；若改过扩展文件建议浏览器 Ctrl+Shift+R 硬刷新）。
 
-在节点搜索框搜索：`Adjust Color & Effect`、`Skin Beauty`、`Layer Composite`、`maskfeather`、`Before/After Preview`、`Image Compare A/B`。
+在节点搜索框搜索：`Adjust Color & Effect`、`Skin Beauty`、`Layer Composite`、`maskfeather`、`Before/After Preview`、`Image Compare A/B`、`Label`。
 
 ## 快速上手
 
@@ -147,6 +149,14 @@ Set Image Variable（key=my_image，image=任意 IMAGE）→ 串在流程中
 - Get：`key` 变量名，输出存入的 IMAGE；**零等待、无依赖**——Set 是执行根（OUTPUT_NODE），同一运行内必然先于 Get 执行并写入；节点已禁止输出缓存（IS_CHANGED），每次运行都重新读取变量。仅当单独运行/部分执行且 Set 未执行时，输出 1×1 占位黑图并在节点上提示，流程不中断
 - 存储位于内存，重启 ComfyUI 后清空
 
+### Label（节点键 `Label (ItsGemTools)`）
+浮动文字标签，给工作流分区、写说明用；**纯前端节点**（不参与执行、无后端类），文本 = 节点标题：
+- **改文案**：双击节点 → 就地弹出输入框，改完**按回车或点击节点外区域**立即生效，Esc 取消；标题支持 `\n` 字面序列换行
+- **改样式**：右键 → Properties：字号 / 字体 / 字色 / 对齐（left / center / right）/ 背景色 / 内边距 / 圆角 / 角度（度）
+- **半透明**：颜色支持 8 位 HEX——`#FFFFFF` 不透明白，`#FFFFFF88` 半透明白、`#00000066` 半透明黑（背景与文字均支持）
+- **固定**：右键 → Pin 把标签钉在画布上并让点击穿透，再次右键取消
+- **命名**：`Label (ItsGemTools)` 带品牌后缀，与 rgthree 等第三方 `Label (…)` 互不冲突、不会被合并覆盖；搜索框输入 `label` 即可前缀命中
+
 ## 中英双语
 
 - 节点标题与 Image Compare 面板按钮跟随 ComfyUI 界面语言自动切换（Settings → Language 选简体中文即显示中文）。
@@ -167,10 +177,11 @@ Set Image Variable（key=my_image，image=任意 IMAGE）→ 串在流程中
 | Set Image Alpha / Set Masked Alpha | torch | ComfyUI 自带 |
 | Before/After Preview | torch | ComfyUI 自带 |
 | Image Compare A/B | 前端内联 | 面板预览纯浏览器 JS，零依赖 |
+| Label | 前端内联 | 纯前端虚拟节点，画布自绘，零依赖、不参与执行 |
 
 ### 前端依赖
 
-无。4 个前端扩展（自动刷新 / 色条、对比面板、外观主题、双语）全部内联自包含，**不安装任何 npm 包**。
+无。5 个前端扩展（自动刷新 / 色条、对比面板、外观主题、双语、Label 标签）全部内联自包含，**不安装任何 npm 包**。
 
 ### scipy 需要装吗？
 
