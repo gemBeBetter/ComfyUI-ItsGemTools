@@ -1,5 +1,6 @@
 import random
 import string
+import time
 from pathlib import Path
 
 import numpy as np
@@ -74,8 +75,9 @@ class MaskFeather:
             },
         }
 
-    RETURN_TYPES = ("MASK", "IMAGE")
-    RETURN_NAMES = ("feathered_mask", "rgba_image")
+    RETURN_TYPES = ("IMAGE", "MASK")
+    # 输出端排序规范：image（rgba_image）在上、mask（feathered_mask）在下
+    RETURN_NAMES = ("rgba_image", "feathered_mask")
     FUNCTION = "feather"
     CATEGORY = "masking/feather"
     DESCRIPTION = (
@@ -177,7 +179,7 @@ class MaskFeather:
 
         # Return tensors on the same device as the incoming mask/image for ComfyUI.
         target_device = image.device if image is not None else mask.device
-        return (out_mask.to(target_device), rgba.to(target_device))
+        return (rgba.to(target_device), out_mask.to(target_device))
 
 
 class SetImageAlpha:
@@ -1375,7 +1377,7 @@ class SetImageVar:
     )
 
     def set_var(self, image, key):
-        _IMAGE_STORE[str(key)] = image
+        _IMAGE_STORE[str(key).strip()] = image
         return (image,)
 
 
@@ -1406,7 +1408,16 @@ class GetImageVar:
     )
 
     def get_var(self, key):
-        img = _IMAGE_STORE.get(str(key))
+        key = str(key).strip()
+        img = _IMAGE_STORE.get(key)
+        # Get 节点无输入连线，ComfyUI 可能将其与 Set 并行执行（Get 先跑）。
+        # 这里短暂轮询等待 Set 写入，避免"明明设了变量却报未找到"的时序误报。
+        if img is None:
+            for _ in range(40):  # 最多约 2 秒
+                time.sleep(0.05)
+                img = _IMAGE_STORE.get(key)
+                if img is not None:
+                    break
         if img is None:
             raise RuntimeError(
                 f"[ItsGemTools] Image variable '{key}' not found. "

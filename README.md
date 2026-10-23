@@ -130,7 +130,7 @@ Load Image ─┬─> Adjust Color & Effect ─┬─> after ─┐
 - `opacity` 不透明度 0–100；`fit`：stretch 铺满 / contain 等比居中
 
 ### maskfeather（节点键 `maskfeather`，旧名 SAM3DistanceFeather）
-对 MASK 按阈值二值化后，以有符号欧氏距离向内外双向羽化（`inner_feather_px` / `outer_feather_px`），输出 4 通道透明 PNG 与羽化后 MASK。
+对 MASK 按阈值二值化后，以有符号欧氏距离向内外双向羽化（`inner_feather_px` / `outer_feather_px`），输出 4 通道透明 PNG 与羽化后 MASK。输出端顺序：`rgba_image`（IMAGE）在上、`feathered_mask`（MASK）在下。
 
 ### Before/After Preview
 `before` + `after` 两图并排（可选间隔），缩放到同一尺寸实时对比。
@@ -145,7 +145,7 @@ Set Image Variable（key=my_image，image=任意 IMAGE）→ 串在流程中
 ... 任意位置放 Get Image Variable（key=my_image）→ 输出刚才存入的 image
 ```
 - Set：`image` 输入 + `key` 变量名，image 原样透传输出（可串在流程中间）
-- Get：`key` 变量名，输出存入的 IMAGE；若 key 尚未写入，运行时报错提示
+- Get：`key` 变量名，输出存入的 IMAGE；因 Get 无输入连线、ComfyUI 可能将其与 Set 并行执行，Get 会**自动等待最多约 2 秒**让 Set 写入（先设后取不再误报）；真未写入才报错提示
 - 存储位于内存，重启 ComfyUI 后清空
 
 ## 中英双语
