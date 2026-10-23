@@ -1431,10 +1431,11 @@ class GetImageVar:
     def get_var(self, key):
         key = str(key).strip()
         img = _IMAGE_STORE.get(key, _MISSING)
-        # Get 节点无输入连线，ComfyUI 可能将其与 Set 并行执行（Get 先跑）。
-        # 短暂轮询等待 Set 写入，避免"明明设了变量却报未找到"的时序误报。
+        # Get 节点无输入连线，ComfyUI 会将其与 Set 并行执行（Get 先跑）。
+        # 大图（如 4K PNG）Load 解码就要数秒，因此这里轮询等待最长约 8 秒，
+        # 等 Set 写入后立即返回，避免"变量名相同却拿不到图"的时序误报。
         if img is _MISSING:
-            for _ in range(40):  # 最多约 2 秒
+            for _ in range(160):  # 最多约 8 秒
                 time.sleep(0.05)
                 img = _IMAGE_STORE.get(key, _MISSING)
                 if img is not _MISSING:

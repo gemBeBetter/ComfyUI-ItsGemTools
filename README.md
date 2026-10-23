@@ -145,7 +145,7 @@ Set Image Variable（key=my_image，image=任意 IMAGE）→ 串在流程中
 ... 任意位置放 Get Image Variable（key=my_image）→ 输出刚才存入的 image
 ```
 - Set：`key` 变量名 + 可选 `image`（不连 image 也可，仅声明变量名）；连 image 时原样透传输出
-- Get：`key` 变量名，输出存入的 IMAGE；变量未就绪时**不报错中断**——先自动等待最多约 2 秒（ComfyUI 并行时序兜底），仍未就绪则输出 1×1 占位黑图并在节点上提示原因，流程继续
+- Get：`key` 变量名，输出存入的 IMAGE；变量未就绪时**不报错中断**——先自动等待最多约 8 秒（大图 Load 解码本身需数秒，兼容并行时序），仍未就绪则输出 1×1 占位黑图并在节点上提示原因，流程继续
 - 存储位于内存，重启 ComfyUI 后清空
 
 ## 中英双语
