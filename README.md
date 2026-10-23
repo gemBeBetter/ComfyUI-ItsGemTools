@@ -140,16 +140,51 @@ Load Image ─┬─> Adjust Color & Effect ─┬─> after ─┐
 - 节点标题与 Image Compare 面板按钮跟随 ComfyUI 界面语言自动切换（Settings → Language 选简体中文即显示中文）。
 - 也可在**节点右键菜单 → 语言 / Language** 手动固定中文或 English。
 
-## 依赖
+## 依赖说明
 
-- 核心：`torch`、`numpy`、`Pillow`（ComfyUI 自带）
-- 可选：`scipy`（仅 maskfeather 羽化节点使用 `scipy.ndimage.distance_transform_edt`；缺失时该节点自动降级，其余节点不受影响）
-- 前端：无任何 npm / 第三方依赖，全部内联。
+**结论：本包没有"必须额外安装"的依赖。** 全部节点只依赖 ComfyUI 自带的 `torch`、`numpy`、`Pillow`，直接放进 `custom_nodes` 即可运行；唯一可选的 `scipy` 只服务于 maskfeather 一个节点，缺失时该节点自动降级，其余节点完全不受影响。
 
-若需安装 scipy（用该 ComfyUI 实例自己的 Python）：
+### 逐节点依赖
+
+| 节点 | 依赖 | 说明 |
+|---|---|---|
+| Adjust Color & Effect | torch / numpy | 纯 tensor 算法，ComfyUI 自带 |
+| Skin Beauty（美颜） | torch / numpy | 内置肤色检测，ComfyUI 自带 |
+| Layer Composite | torch | 混合模式逐通道实现，ComfyUI 自带 |
+| maskfeather（羽化） | torch / **scipy（可选）** | 使用 `scipy.ndimage.distance_transform_edt` 计算有符号欧氏距离；**未装 scipy 时该节点报错并提示，其他节点不受影响** |
+| Set Image Alpha / Set Masked Alpha | torch | ComfyUI 自带 |
+| Before/After Preview | torch | ComfyUI 自带 |
+| Image Compare A/B | 前端内联 | 面板预览纯浏览器 JS，零依赖 |
+
+### 前端依赖
+
+无。4 个前端扩展（自动刷新 / 色条、对比面板、外观主题、双语）全部内联自包含，**不安装任何 npm 包**。
+
+### scipy 需要装吗？
+
+- 如果你**用不到 maskfeather**（羽化）节点 → **不需要装**。
+- 如果你**要用 maskfeather** → 用**该 ComfyUI 实例自己的 Python**安装，不要用系统 Python：
+
 ```bash
-python.exe -m pip install scipy
+# Windows（ComfyUI Desktop，请把路径换成你实际运行的实例）
+C:\...\ComfyUI\.venv\Scripts\python.exe -m pip install scipy
+
+# 或手动在 ComfyUI 目录下激活虚拟环境后：
+# .venv\Scripts\activate
+# python -m pip install scipy
 ```
+
+```bash
+# Linux / macOS（venv 或 conda 环境同理）
+/path/to/ComfyUI/venv/bin/python -m pip install scipy
+```
+
+装完**重启 ComfyUI**。不装 scipy 也能正常启动和加载本包所有其他节点。
+
+### 实测环境（开发自测通过）
+
+- Python 3.13 / torch 2.12.1+cu130 / numpy 2.5.1 / scipy 1.18.0（Windows，ComfyUI Desktop）
+- 前端：ComfyUI 0.42.x / comfyui-frontend-package 1.55.x
 
 ## 兼容性
 
