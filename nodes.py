@@ -1389,6 +1389,12 @@ class SetImageVar:
         "连接时原样透传输出，方便在大型工作流中跨节点传递图片。"
     )
 
+    @classmethod
+    def IS_CHANGED(cls, key, image=None):
+        # Set 的输入（image + key）每次运行不变时，ComfyUI 默认会缓存跳过执行，
+        # 导致进程重启后变量表从未写入、Get 永远读不到。返回递增计数器强制每次执行。
+        return next(_GET_CACHE_BUSTER)
+
     def set_var(self, key, image=None):
         key = str(key).strip()
         if image is None:
