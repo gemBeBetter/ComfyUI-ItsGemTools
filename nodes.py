@@ -1348,6 +1348,7 @@ class ImageCompare:
 _IMAGE_STORE = {}
 _MISSING = object()  # 哨兵：区分"从未 Set 过"与"Set 过但未连接图像（值为 None）"
 _PLACEHOLDER_IMAGE = None
+_GET_CACHE_BUSTER = iter(range(1 << 63))  # Get 的 IS_CHANGED 计数器：禁止 ComfyUI 缓存输出
 
 
 def _placeholder():
@@ -1427,6 +1428,13 @@ class GetImageVar:
         "图像变量（get）：按 key 读取此前 Set Image Variable 存入的 image。"
         "变量未就绪时输出占位黑图并提示，不会中断工作流。"
     )
+
+    @classmethod
+    def IS_CHANGED(cls, key):
+        # Get 的输入只有 key 这个 widget（每次运行不变），若不禁止缓存，
+        # ComfyUI 会跳过执行、永远返回上一次的旧输出（变量更新后取不到新图）。
+        # 返回递增计数器：每次执行都重新读取全局变量表。
+        return next(_GET_CACHE_BUSTER)
 
     def get_var(self, key):
         key = str(key).strip()
