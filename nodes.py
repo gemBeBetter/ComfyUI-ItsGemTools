@@ -1346,24 +1346,37 @@ class ImageCompare:
 
 # 全局图像变量表（进程内存储）：Set Image Variable 写入，Get Image Variable 读取。
 _IMAGE_STORE = {}
+_MISSING = object()  # 哨兵：区分"从未 Set 过"与"Set 过但未连接图像（值为 None）"
+_PLACEHOLDER_IMAGE = None
+
+
+def _placeholder():
+    """1x1 黑色占位图：变量未就绪时输出，避免 ComfyUI 因 None 输出中断流程。"""
+    global _PLACEHOLDER_IMAGE
+    if _PLACEHOLDER_IMAGE is None:
+        _PLACEHOLDER_IMAGE = torch.zeros((1, 1, 1, 3), dtype=torch.float32)
+    return _PLACEHOLDER_IMAGE
 
 
 class SetImageVar:
     """
-    图像变量（set）：把 image 存入全局变量表，键由 key 指定；
-    image 原样透传输出，可串在流程中任意位置。
+    图像变量（set）：把 image 存入全局变量表，键由 key 指定。
+    image 可选：未连接时仅声明变量名（值为空），不报错；
+    连接时 image 原样透传输出，可串在流程中任意位置。
     """
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "image": ("IMAGE",),
                 "key": ("STRING", {
                     "default": "my_image",
                     "multiline": False,
                     "tooltip": "变量名：后续 Get Image Variable 用相同 key 读取。"
                 }),
+            },
+            "optional": {
+                "image": ("IMAGE",),
             },
         }
 
@@ -1372,18 +1385,26 @@ class SetImageVar:
     FUNCTION = "set_var"
     CATEGORY = "image/utils"
     DESCRIPTION = (
-        "图像变量（set）：把 image 存入全局变量表（键由 key 指定），并原样透传输出，"
-        "方便在大型工作流中跨节点传递图片。"
+        "图像变量（set）：把 image 存入全局变量表（键由 key 指定）。image 可不连接（仅声明变量名），"
+        "连接时原样透传输出，方便在大型工作流中跨节点传递图片。"
     )
 
-    def set_var(self, image, key):
-        _IMAGE_STORE[str(key).strip()] = image
+    def set_var(self, key, image=None):
+        key = str(key).strip()
+        if image is None:
+            _IMAGE_STORE[key] = None
+            return (_placeholder(), {
+                "ui": {"info": f"[ItsGemTools] Set Image Variable '{key}': 未连接 image，仅声明变量。"}
+            })
+        _IMAGE_STORE[key] = image
         return (image,)
 
 
 class GetImageVar:
     """
     图像变量（get）：按 key 从全局变量表读取 image。
+    变量未就绪时不报错中断：先短暂等待 Set 写入（并行时序兜底），
+    仍未就绪则输出 1x1 占位黑图并在面板提示原因，流程继续。
     """
 
     @classmethod
@@ -1404,25 +1425,29 @@ class GetImageVar:
     CATEGORY = "image/utils"
     DESCRIPTION = (
         "图像变量（get）：按 key 读取此前 Set Image Variable 存入的 image。"
-        "若 key 未写入，报错提示先在图中执行 Set Image Variable。"
+        "变量未就绪时输出占位黑图并提示，不会中断工作流。"
     )
 
     def get_var(self, key):
         key = str(key).strip()
-        img = _IMAGE_STORE.get(key)
+        img = _IMAGE_STORE.get(key, _MISSING)
         # Get 节点无输入连线，ComfyUI 可能将其与 Set 并行执行（Get 先跑）。
-        # 这里短暂轮询等待 Set 写入，避免"明明设了变量却报未找到"的时序误报。
-        if img is None:
+        # 短暂轮询等待 Set 写入，避免"明明设了变量却报未找到"的时序误报。
+        if img is _MISSING:
             for _ in range(40):  # 最多约 2 秒
                 time.sleep(0.05)
-                img = _IMAGE_STORE.get(key)
-                if img is not None:
+                img = _IMAGE_STORE.get(key, _MISSING)
+                if img is not _MISSING:
                     break
+        if img is _MISSING:
+            return (_placeholder(), {
+                "ui": {"info": f"[ItsGemTools] 变量 '{key}' 尚未由 Set Image Variable 写入，已输出占位黑图。"
+                               "（请先放置并执行一次 Set Image Variable(key={key})）"}
+            })
         if img is None:
-            raise RuntimeError(
-                f"[ItsGemTools] Image variable '{key}' not found. "
-                "请先在图中用 Set Image Variable 写入同名 key 并执行一次。"
-            )
+            return (_placeholder(), {
+                "ui": {"info": f"[ItsGemTools] 变量 '{key}' 已声明但未连接 image，已输出占位黑图。"}
+            })
         return (img,)
 
 
