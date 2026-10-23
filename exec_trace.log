@@ -1,0 +1,5 @@
+21:51:03.722 SET_IS_CHANGED | key= | 'girl' | image= | None
+21:51:03.767 GET_IS_CHANGED | key= | 'girl'
+21:51:03.768 SET_EXEC | key= | 'girl' | image= | Tensor(1, 4608, 3840, 3) | store_before= | ['girl', 'k_fresh']
+21:51:03.768 SET_WROTE | key= | 'girl' | shape= | (1, 4608, 3840, 3) | store_after= | ['girl', 'k_fresh']
+21:51:03.769 GET_EXEC | key= | 'girl' | hit= | Tensor(1, 4608, 3840, 3) | store= | ['girl', 'k_fresh']

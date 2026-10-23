@@ -34,8 +34,7 @@
 
 ## 安装
 
-### 方式一：ComfyUI Manager（已收录后）
-打开 ComfyUI Manager → 安装自定义节点 → 搜索 **ItsGemTools** → 安装。
+### 方式一：ComfyUI Manager（已收录后）打开 ComfyUI Manager → 安装自定义节点 → 搜索 **ItsGemTools** → 安装。
 
 ### 方式二：git clone
 ```bash
@@ -203,6 +202,10 @@ C:\...\ComfyUI\.venv\Scripts\python.exe -m pip install scipy
 
 - 测试环境：ComfyUI 0.42.x / 前端 1.55.x，Windows / ComfyUI Desktop。
 - 纯 PyTorch 实现，理论上支持任意平台与任意 GPU/CPU。
+
+## 更新日志
+
+版本历史与变更说明见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可证
 
