@@ -56,6 +56,8 @@ class MaskFeather:
     def INPUT_TYPES(cls):
         return {
             "required": {
+                # 接口排序规范：image 在上、mask 在下，防止交叉连线、提升工作流可读性
+                "image": ("IMAGE",),
                 "mask": ("MASK",),
                 "inner_feather_px": ("INT", {
                     "default": 2, "min": 0, "max": 128, "step": 1,
@@ -70,9 +72,6 @@ class MaskFeather:
                     "tooltip": "Threshold used to convert the incoming mask into a binary contour."
                 }),
             },
-            "optional": {
-                "image": ("IMAGE",),
-            }
         }
 
     RETURN_TYPES = ("MASK", "IMAGE")
@@ -1103,8 +1102,9 @@ class LayerComposite:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "background": ("IMAGE",),
+                # 接口排序规范：foreground 在上、background 在下
                 "foreground": ("IMAGE",),
+                "background": ("IMAGE",),
                 "blend_mode": (["normal", "multiply", "screen", "overlay", "soft_light", "hard_light"], {
                     "default": "normal",
                     "tooltip": "混合模式：normal 正常叠放；multiply 正片叠底（变暗）；screen 滤色（变亮）；overlay 叠加；soft_light 柔光；hard_light 强光。"
@@ -1342,6 +1342,79 @@ class ImageCompare:
         }
 
 
+# 全局图像变量表（进程内存储）：Set Image Variable 写入，Get Image Variable 读取。
+_IMAGE_STORE = {}
+
+
+class SetImageVar:
+    """
+    图像变量（set）：把 image 存入全局变量表，键由 key 指定；
+    image 原样透传输出，可串在流程中任意位置。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "key": ("STRING", {
+                    "default": "my_image",
+                    "multiline": False,
+                    "tooltip": "变量名：后续 Get Image Variable 用相同 key 读取。"
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "set_var"
+    CATEGORY = "image/utils"
+    DESCRIPTION = (
+        "图像变量（set）：把 image 存入全局变量表（键由 key 指定），并原样透传输出，"
+        "方便在大型工作流中跨节点传递图片。"
+    )
+
+    def set_var(self, image, key):
+        _IMAGE_STORE[str(key)] = image
+        return (image,)
+
+
+class GetImageVar:
+    """
+    图像变量（get）：按 key 从全局变量表读取 image。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "key": ("STRING", {
+                    "default": "my_image",
+                    "multiline": False,
+                    "tooltip": "变量名：与 Set Image Variable 的 key 一致。"
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "get_var"
+    CATEGORY = "image/utils"
+    DESCRIPTION = (
+        "图像变量（get）：按 key 读取此前 Set Image Variable 存入的 image。"
+        "若 key 未写入，报错提示先在图中执行 Set Image Variable。"
+    )
+
+    def get_var(self, key):
+        img = _IMAGE_STORE.get(str(key))
+        if img is None:
+            raise RuntimeError(
+                f"[ItsGemTools] Image variable '{key}' not found. "
+                "请先在图中用 Set Image Variable 写入同名 key 并执行一次。"
+            )
+        return (img,)
+
+
 NODE_CLASS_MAPPINGS = {
     "maskfeather": MaskFeather,
     "SetImageAlpha": SetImageAlpha,
@@ -1354,6 +1427,8 @@ NODE_CLASS_MAPPINGS = {
     "BeforeAfterPreview": BeforeAfterPreview,
     # 键用 ItsGemImageCompare：避免覆盖 ComfyUI 内置同名 ImageCompare(Compare Images) 节点
     "ItsGemImageCompare": ImageCompare,
+    "SetImageVar": SetImageVar,
+    "GetImageVar": GetImageVar,
     # 旧名称保留映射（菜单中隐藏），保证历史保存的工作流仍能加载。
     "SAM3DistanceFeather": MaskFeather,
 }
@@ -1369,6 +1444,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LayerComposite": "Layer Composite",
     "BeforeAfterPreview": "Before/After Preview",
     "ItsGemImageCompare": "Image Compare A/B",
+    "SetImageVar": "Set Image Variable",
+    "GetImageVar": "Get Image Variable",
     # 空字符串让旧节点名在右键菜单中隐藏，仅作为工作流兼容别名。
     "SAM3DistanceFeather": "",
 }

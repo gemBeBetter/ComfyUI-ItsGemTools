@@ -21,6 +21,9 @@
 | **Set Image Alpha / Set Masked Alpha** | 图层透明度控制 | 整图或仅遮罩区域设定 Alpha |
 | **Before/After Preview** | 剪映对比视图 | 原图与调色结果并排实时对比 |
 | **Image Compare A/B** | 修图软件对比模式 | SLIDE 滑动逐帧揭示 A/B，A/B 一键切换，面板内嵌预览 |
+| **Set / Get Image Variable** | 跨节点传递图片 | 全局图像变量：Set 写入（image 透传）、Get 按 key 读取，大型工作流免拉长线 |
+
+> **接口排序规范**：本包所有节点统一遵循——含 `image` 与 `mask` 输入时，**image 在上、mask 在下**；同时含 `foreground` / `background` 时，**foreground 在上、background 在下**。避免交叉连线，提升工作流可读性。
 
 ## 特色
 
@@ -134,6 +137,16 @@ Load Image ─┬─> Adjust Color & Effect ─┬─> after ─┐
 
 ### Image Compare A/B（节点键 `ItsGemImageCompare`，显示名 Image Compare A/B）
 面板内嵌预览：SLIDE 滑动分割线逐步揭示 B 图，A/B 一键切换；尺寸标注、状态提示；模式随工作流保存。不覆盖 ComfyUI 内置 Compare Images 节点。
+
+### Set Image Variable / Get Image Variable（节点键 `SetImageVar` / `GetImageVar`）
+全局图像变量（进程内存储），方便大型工作流跨节点传递图片、避免拉长线：
+```
+Set Image Variable（key=my_image，image=任意 IMAGE）→ 串在流程中
+... 任意位置放 Get Image Variable（key=my_image）→ 输出刚才存入的 image
+```
+- Set：`image` 输入 + `key` 变量名，image 原样透传输出（可串在流程中间）
+- Get：`key` 变量名，输出存入的 IMAGE；若 key 尚未写入，运行时报错提示
+- 存储位于内存，重启 ComfyUI 后清空
 
 ## 中英双语
 

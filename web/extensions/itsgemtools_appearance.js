@@ -19,6 +19,8 @@ const NODE_TYPES = new Set([
     "LayerComposite",
     "BeforeAfterPreview",
     "ItsGemImageCompare",
+    "SetImageVar",
+    "GetImageVar",
 ]);
 
 const TITLE_COLOR = "#8a63d2"; // 标题栏：淡紫

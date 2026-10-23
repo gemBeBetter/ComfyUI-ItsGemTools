@@ -18,6 +18,8 @@ const NODE_NAMES = {
     "LayerComposite": { zh: "图层合成", en: "Layer Composite" },
     "BeforeAfterPreview": { zh: "前后对比预览", en: "Before/After Preview" },
     "ItsGemImageCompare": { zh: "图像对比 A/B", en: "Image Compare A/B" },
+    "SetImageVar": { zh: "设置图像变量", en: "Set Image Variable" },
+    "GetImageVar": { zh: "读取图像变量", en: "Get Image Variable" },
 };
 
 function detectLang() {
