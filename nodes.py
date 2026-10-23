@@ -1,6 +1,5 @@
 import random
 import string
-import time
 from pathlib import Path
 
 import numpy as np
@@ -1439,15 +1438,8 @@ class GetImageVar:
     def get_var(self, key):
         key = str(key).strip()
         img = _IMAGE_STORE.get(key, _MISSING)
-        # Get 节点无输入连线，ComfyUI 会将其与 Set 并行执行（Get 先跑）。
-        # 大图（如 4K PNG）Load 解码就要数秒，因此这里轮询等待最长约 8 秒，
-        # 等 Set 写入后立即返回，避免"变量名相同却拿不到图"的时序误报。
-        if img is _MISSING:
-            for _ in range(160):  # 最多约 8 秒
-                time.sleep(0.05)
-                img = _IMAGE_STORE.get(key, _MISSING)
-                if img is not _MISSING:
-                    break
+        # 无需等待：ComfyUI 执行器按拓扑串行调度，同一工作流内 Set（节点插入序在前）
+        # 必然先于 Get 执行；Set 未执行仅发生在"部分执行/单独运行 Get"时。
         if img is _MISSING:
             return (_placeholder(), {
                 "ui": {"info": f"[ItsGemTools] 变量 '{key}' 尚未由 Set Image Variable 写入，已输出占位黑图。"
