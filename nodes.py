@@ -1,3 +1,4 @@
+import os
 import random
 import string
 from pathlib import Path
@@ -1384,6 +1385,10 @@ class SetImageVar:
     RETURN_NAMES = ("image",)
     FUNCTION = "set_var"
     CATEGORY = "image/utils"
+    # OUTPUT_NODE：ComfyUI 只执行"输出节点可达集"（从 OUTPUT_NODE 沿输入依赖递归构建）。
+    # Set 的输出若不连线到任何输出节点，会被当成孤立节点跳过执行，导致变量表永远为空。
+    # 标记为 OUTPUT_NODE 后 Set 成为执行根（必执行），且同批就绪时优先于 Get 执行。
+    OUTPUT_NODE = True
     DESCRIPTION = (
         "图像变量（set）：把 image 存入全局变量表（键由 key 指定）。image 可不连接（仅声明变量名），"
         "连接时原样透传输出，方便在大型工作流中跨节点传递图片。"
@@ -1444,8 +1449,8 @@ class GetImageVar:
     def get_var(self, key):
         key = str(key).strip()
         img = _IMAGE_STORE.get(key, _MISSING)
-        # 无需等待：ComfyUI 执行器按拓扑串行调度，同一工作流内 Set（节点插入序在前）
-        # 必然先于 Get 执行；Set 未执行仅发生在"部分执行/单独运行 Get"时。
+        # 无需等待：Set 是 OUTPUT_NODE（执行根），同一运行内必然先于 Get 执行并写入。
+        # Set 未执行仅发生在"部分执行/单独运行 Get"时，此时输出占位并提示，不中断流程。
         if img is _MISSING:
             return (_placeholder(), {
                 "ui": {"info": f"[ItsGemTools] 变量 '{key}' 尚未由 Set Image Variable 写入，已输出占位黑图。"

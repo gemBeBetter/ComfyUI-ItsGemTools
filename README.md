@@ -144,8 +144,8 @@ Load Image ─┬─> Adjust Color & Effect ─┬─> after ─┐
 Set Image Variable（key=my_image，image=任意 IMAGE）→ 串在流程中
 ... 任意位置放 Get Image Variable（key=my_image）→ 输出刚才存入的 image
 ```
-- Set：`key` 变量名 + 可选 `image`（不连 image 也可，仅声明变量名）；连 image 时原样透传输出
-- Get：`key` 变量名，输出存入的 IMAGE；**零等待、无依赖**——ComfyUI 按拓扑串行执行，同一工作流内 Set 必然先于 Get 运行；节点已禁止输出缓存（IS_CHANGED），每次运行都重新读取变量。仅当单独运行/部分执行且 Set 未执行时，输出 1×1 占位黑图并在节点上提示，流程不中断
+- Set：`key` 变量名 + 可选 `image`（不连 image 也可，仅声明变量名）；连 image 时原样透传输出。Set 标记为输出节点（OUTPUT_NODE）：ComfyUI 只执行"输出可达集"，若不标记，未连线的 Set 会被当作孤立节点跳过执行、变量永远为空
+- Get：`key` 变量名，输出存入的 IMAGE；**零等待、无依赖**——Set 是执行根（OUTPUT_NODE），同一运行内必然先于 Get 执行并写入；节点已禁止输出缓存（IS_CHANGED），每次运行都重新读取变量。仅当单独运行/部分执行且 Set 未执行时，输出 1×1 占位黑图并在节点上提示，流程不中断
 - 存储位于内存，重启 ComfyUI 后清空
 
 ## 中英双语
