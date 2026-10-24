@@ -77,7 +77,7 @@ function gemNodeToOffset(canvas, pos) {
 
 // 通用就地文案编辑（textarea 覆盖节点位置；回车/失焦提交、Esc 取消）
 // 兼容两类节点：真实 ItsGemLabel 实例与新版前端 Vue 模式下的包装节点。
-function startGenericLabelEdit(node, canvas) {
+function startGenericLabelEdit(node, canvas, clientX, clientY) {
     gemDbg("edit-start", node.type, "pos", JSON.stringify(node.pos), "size", JSON.stringify(node.size));
     if (node._editor) return;
     if (!canvas?.canvas?.parentNode) {
@@ -100,16 +100,24 @@ function startGenericLabelEdit(node, canvas) {
 
     editor.value = String(node.title ?? "").replace(/\\n/g, "\n");
     editor.wrap = "off";
-    // 坐标换算：多路径求像素偏移；即使全失败也退化为"节点画布坐标×显示缩放"的近似，绝不空手
-    let px;
-    try {
-        px = gemNodeToOffset(canvas, [node.pos[0], node.pos[1]]);
-    } catch (_) {
-        px = null;
+    // 坐标换算：优先锚定双击点（绝对可靠、必然可见）；无双击点时多路径求像素偏移
+    let left;
+    let top;
+    if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
+        left = clientX - w / 2;
+        top = clientY - h / 2;
+        gemDbg("edit-anchor", "clientX", Math.round(clientX), "clientY", Math.round(clientY), "w", Math.round(w), "h", Math.round(h));
+    } else {
+        let px;
+        try {
+            px = gemNodeToOffset(canvas, [node.pos?.[0] ?? 0, node.pos?.[1] ?? 0]);
+        } catch (_) {
+            px = null;
+        }
+        left = safeN(rect.left + (px?.[0] ?? (node.pos?.[0] ?? 0) * scale), rect.left + 100);
+        top = safeN(rect.top + (px?.[1] ?? (node.pos?.[1] ?? 0) * scale), rect.top + 100);
     }
-    const left = safeN(rect.left + (px?.[0] ?? node.pos?.[0] * scale), rect.left + 100);
-    const top = safeN(rect.top + (px?.[1] ?? node.pos?.[1] * scale), rect.top + 100);
-    gemDbg("edit-geo", "left", Math.round(left), "top", Math.round(top), "pos", JSON.stringify(node.pos), "px", JSON.stringify(px), "zoom", zoom);
+    gemDbg("edit-geo", "left", Math.round(left), "top", Math.round(top), "pos", JSON.stringify(node.pos), "zoom", zoom);
     // 编辑框固定白底黑字：任何节点配色下都清晰可读，避免"白底白字"看不见
     editor.style.cssText = [
         "position:fixed",
@@ -165,12 +173,12 @@ function startGenericLabelEdit(node, canvas) {
 }
 
 // 命中入口：真实实例走原型方法；Vue 包装等无 startInlineEdit 的节点走通用实现
-function startItsGemLabelEdit(node, canvas) {
+function startItsGemLabelEdit(node, canvas, clientX, clientY) {
     if (typeof node.startInlineEdit === "function") {
-        node.startInlineEdit(canvas);
+        node.startInlineEdit(canvas, clientX, clientY);
         return;
     }
-    startGenericLabelEdit(node, canvas);
+    startGenericLabelEdit(node, canvas, clientX, clientY);
 }
 
 // 画布坐标命中 Label：新前端（Vue 渲染模式）下节点不保证是 ItsGemLabel 实例，
@@ -289,11 +297,11 @@ class ItsGemLabel extends LGraphNode {
 
     // ---------- 双击：进入就地文案编辑 ----------
     onDblClick(event, pos, canvas) {
-        this.startInlineEdit(canvas || LGraphCanvas.active_canvas);
+        this.startInlineEdit(canvas || LGraphCanvas.active_canvas, event?.clientX, event?.clientY);
     }
 
-    startInlineEdit(canvas) {
-        startGenericLabelEdit(this, canvas);
+    startInlineEdit(canvas, clientX, clientY) {
+        startGenericLabelEdit(this, canvas, clientX, clientY);
     }
 
     // ---------- 属性面板（ComfyUI Properties 自动读取 @ 静态定义） ----------
@@ -380,7 +388,7 @@ function isGemLabelNode(n) {
                 (e && typeof e.detail === "number" && e.detail >= 2);
             if (isDbl && this.clicked_node && isGemLabelNode(this.clicked_node)) {
                 gemDbg("pMD-hit", this.clicked_node.type, "pos", JSON.stringify(this.clicked_node.pos));
-                startItsGemLabelEdit(this.clicked_node, this);
+                startItsGemLabelEdit(this.clicked_node, this, e?.clientX, e?.clientY);
                 return;
             }
         } catch (err) { /* 不阻断画布正常流程 */ }
@@ -422,7 +430,7 @@ function initGemLabelRuntime() {
             if (node) {
                 e.preventDefault();
                 e.stopImmediatePropagation();
-                startItsGemLabelEdit(node, canvas);
+                startItsGemLabelEdit(node, canvas, e.clientX, e.clientY);
             }
         } catch (err) {
             console.error("[ItsGemTools.Label] dblclick handler:", err);
@@ -450,7 +458,7 @@ function initGemLabelRuntime() {
                     gemDbg("pdown-dbl-hit", node.type);
                     e.preventDefault();
                     e.stopImmediatePropagation();
-                    startItsGemLabelEdit(node, canvas);
+                    startItsGemLabelEdit(node, canvas, e.clientX, e.clientY);
                 }
                 return;
             }
