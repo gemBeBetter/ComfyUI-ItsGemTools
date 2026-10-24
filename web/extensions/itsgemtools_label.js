@@ -256,14 +256,17 @@ ItsGemLabel._category = "ItsGemTools";
 
 // 宽匹配识别 Label 节点：前端 1.55 在 Vue 渲染模式下节点的 type 可能被改为
 // "frontend_only"（画布标注 "#90 frontend_only" 的来源），type 并不可靠；
-// 对齐 rgthree 的做法改用 constructor / instanceof 识别，并保留 type / comfyClass 兜底。
+// 对齐 rgthree 的做法改用 constructor / instanceof 识别，并保留 type / comfyClass 兜底；
+// 最后再兜底"无输入输出的纯前端装饰节点"（历史遗留的 frontend_only 占位节点，双击编辑仍应可用）。
 function isGemLabelNode(n) {
-    return !!n && (
-        n.type === LABEL_TYPE ||
-        n.comfyClass === LABEL_TYPE ||
-        n.constructor === ItsGemLabel ||
-        n instanceof ItsGemLabel
-    );
+    if (!n) return false;
+    if (n.type === LABEL_TYPE || n.comfyClass === LABEL_TYPE) return true;
+    if (n.constructor === ItsGemLabel || n instanceof ItsGemLabel) return true;
+    // 兜底：纯前端装饰节点（无输入/输出/控件，画布标注 "frontend_only"）——编辑文字功能照常可用
+    return (n.inputs?.length === 0 || !n.inputs) &&
+        (n.outputs?.length === 0 || !n.outputs) &&
+        !(n.widgets?.length) &&
+        String(n.type ?? "").includes("frontend_only");
 }
 
 // 关键：拦截节点框绘制（对齐 rgthree 的实现）。
