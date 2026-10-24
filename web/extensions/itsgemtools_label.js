@@ -15,27 +15,41 @@ const LABEL_TYPE = "Label (ItsGemTools)";
 // 节点画布坐标 → canvas 元素内像素偏移（多路径，兼容前端 1.55 各版本坐标系统）
 // ------------------------------------------------------------
 function gemNodeToOffset(canvas, pos) {
-    // 路径1：LiteGraph 经典 transform（最可靠）：offset = (pos - translate) * scale
-    const ds = canvas?.ds;
-    if (ds && typeof ds.scale === "number" && Array.isArray(ds.translate)) {
-        return [(pos[0] - ds.translate[0]) * ds.scale, (pos[1] - ds.translate[1]) * ds.scale];
-    }
-    // 路径2：官方 convertCanvasToOffset（返回像素偏移）
-    if (typeof canvas?.convertCanvasToOffset === "function") {
-        try { return canvas.convertCanvasToOffset([pos[0], pos[1]]); } catch (_) { /* 继续 */ }
-    }
-    // 路径3：反向方法近似（旧前端）
-    if (typeof canvas?.convertOffsetToCanvas === "function") {
-        try { return canvas.convertOffsetToCanvas([pos[0], pos[1]]); } catch (_) { /* 继续 */ }
-    }
-    // 路径4：兜底——按画布元素尺寸与视口左上角估算
     const rect = canvas.canvas?.getBoundingClientRect?.();
     const cw = canvas.canvas?.width || 1;
     const ch = canvas.canvas?.height || 1;
-    return [
+    // 诊断日志（调试期）：定位问题时可从 console 读取真实坐标数据
+    console.log("[GemLabel] rect", rect?.left, rect?.top, rect?.width, rect?.height, "cw", cw, "ch", ch, "pos", JSON.stringify(pos));
+    // 路径1：LiteGraph 经典 transform（scale 必须有效，防止 scale=0 导致偏移归零）
+    const ds = canvas?.ds;
+    if (ds && typeof ds.scale === "number" && ds.scale > 0 && Array.isArray(ds.translate)) {
+        const r = [(pos[0] - ds.translate[0]) * ds.scale, (pos[1] - ds.translate[1]) * ds.scale];
+        console.log("[GemLabel] path1 ds", JSON.stringify(ds), "->", r);
+        return r;
+    }
+    // 路径2：官方 convertCanvasToOffset（返回像素偏移）
+    if (typeof canvas?.convertCanvasToOffset === "function") {
+        try {
+            const r = canvas.convertCanvasToOffset([pos[0], pos[1]]);
+            console.log("[GemLabel] path2 ->", r);
+            return r;
+        } catch (_) { /* 继续 */ }
+    }
+    // 路径3：反向方法近似（旧前端）
+    if (typeof canvas?.convertOffsetToCanvas === "function") {
+        try {
+            const r = canvas.convertOffsetToCanvas([pos[0], pos[1]]);
+            console.log("[GemLabel] path3 ->", r);
+            return r;
+        } catch (_) { /* 继续 */ }
+    }
+    // 路径4：兜底——按画布元素尺寸与视口左上角估算
+    const r = [
         (pos[0] / cw) * (rect?.width || 800),
         (pos[1] / ch) * (rect?.height || 600),
     ];
+    console.log("[GemLabel] path4 ->", r);
+    return r;
 }
 
 // 通用就地文案编辑（textarea 覆盖节点位置；回车/失焦提交、Esc 取消）
