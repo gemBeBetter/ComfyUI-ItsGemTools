@@ -152,13 +152,11 @@ function startItsGemLabelEdit(node, canvas, clientX, clientY) {
     startGenericLabelEdit(node, canvas, clientX, clientY);
 }
 
-// 画布坐标命中 Label：新前端（Vue 渲染模式）下节点不保证是 ItsGemLabel 实例，
-// 因此不用 instanceof / getNodeOnPos（两者都可能失效），改为 type + 包围盒直接命中。
-// 命中优先级：① 我们的 Label（isGemLabelNode）；② 任何无输入输出的纯装饰节点（历史遗留 frontend_only 占位，双击照常可编辑文字）。
+// 画布坐标命中 Label：type / 实例 / comfyClass 三重严格匹配，
+// 绝不按"无输入输出"特征兜底——避免误伤 Note / Markdown 等其它装饰节点。
 function findItsGemLabelAt(canvas, canvasX, canvasY) {
     if (!canvas?.graph) return null;
     const nodes = canvas.graph._nodes || [];
-    let fallback = null;
     for (let i = nodes.length - 1; i >= 0; i--) {
         const n = nodes[i];
         if (!n) continue;
@@ -166,11 +164,8 @@ function findItsGemLabelAt(canvas, canvasX, canvasY) {
             canvasY >= n.pos[1] && canvasY <= n.pos[1] + (n.size[1] || 0);
         if (!inBox) continue;
         if (isGemLabelNode(n)) return n;
-        if (!fallback && (n.inputs?.length === 0 || !n.inputs) && (n.outputs?.length === 0 || !n.outputs)) {
-            fallback = n;
-        }
     }
-    return fallback;
+    return null;
 }
 
 class ItsGemLabel extends LGraphNode {
@@ -309,19 +304,13 @@ ItsGemLabel.collapsable = false;
 ItsGemLabel.category = "ItsGemTools";
 ItsGemLabel._category = "ItsGemTools";
 
-// 宽匹配识别 Label 节点：前端 1.55 在 Vue 渲染模式下节点的 type 可能被改为
-// "frontend_only"（画布标注 "#90 frontend_only" 的来源），type 并不可靠；
-// 对齐 rgthree 的做法改用 constructor / instanceof 识别，并保留 type / comfyClass 兜底；
-// 最后再兜底"无输入输出的纯前端装饰节点"（历史遗留的 frontend_only 占位节点，双击编辑仍应可用）。
+// 严格识别 Label 节点：只认 type / comfyClass / 实例三种精确匹配，
+// 不做任何"无输入输出"等特征兜底——避免误伤 Note / Markdown 等其它装饰节点。
 function isGemLabelNode(n) {
     if (!n) return false;
     if (n.type === LABEL_TYPE || n.comfyClass === LABEL_TYPE) return true;
     if (n.constructor === ItsGemLabel || n instanceof ItsGemLabel) return true;
-    // 兜底：纯前端装饰节点（无输入/输出/控件，画布标注 "frontend_only"）——编辑文字功能照常可用
-    return (n.inputs?.length === 0 || !n.inputs) &&
-        (n.outputs?.length === 0 || !n.outputs) &&
-        !(n.widgets?.length) &&
-        String(n.type ?? "").includes("frontend_only");
+    return false;
 }
 
 // 关键：拦截节点框绘制（对齐 rgthree 的实现）。
