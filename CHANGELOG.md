@@ -27,6 +27,7 @@
 - **Label 误伤 Note / Markdown 等基础装饰节点**
   - **根因**：画布命中函数（`findItsGemLabelAt`）带"无输入输出的纯装饰节点"兜底分支——Note / Markdown 同样无输入输出，双击即被劫持弹 Label 编辑框。
   - **修复**：删除全部特征兜底，Label 识别收紧为 **type / comfyClass / 实例三种精确匹配**；`drawNode` 透明拦截、双击 / `pointerdown` / `processMouseDown` / Pin 穿透等所有入口统一走严格判定，与其它装饰节点彻底隔离。
+  - **按需激活**：新增画布级 Label 存在性缓存（`gemGraphHasLabel`）——**画布上没有 Label 节点时所有双击 / 交互监听与拦截立即短路**（零开销、零干扰，不影响添加节点面板、Note / Markdown 等交互）；有 Label 时才全量生效，缓存为 false 时每 1s 惰性重算防漏算。
 
 - **Set / Get Image Variable 不连线时取不到图（本次核心修复）**
   - **根因**：ComfyUI 只执行"输出可达节点集"——执行列表从 `OUTPUT_NODE`（如 Preview / SaveImage）出发沿输入依赖反向构建。`Set Image Variable` 的输出若不连线到任何输出节点，会被调度器判定为孤立节点而**完全不执行**，导致全局变量表永远为空，`Get Image Variable` 只能输出 1×1 占位黑图。

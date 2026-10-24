@@ -313,6 +313,20 @@ function isGemLabelNode(n) {
     return false;
 }
 
+// 画布级 Label 存在性缓存：只有画布上存在 Label 节点时，双击 / 交互监听才生效，
+// 无 Label 的画布零开销、零干扰（不影响 Note / Markdown / 添加节点面板等任何交互）。
+// 缓存为 false 时每 1s 惰性重算一次，防止漏算。
+function gemGraphHasLabel(graph) {
+    if (!graph) return false;
+    const now = Date.now();
+    if (graph.__gemHasLabel || graph.__gemHasLabel === undefined ||
+        now - (graph.__gemHasLabelCheckedAt || 0) > 1000) {
+        graph.__gemHasLabel = (graph._nodes || []).some(isGemLabelNode);
+        graph.__gemHasLabelCheckedAt = now;
+    }
+    return graph.__gemHasLabel;
+}
+
 // 关键：拦截节点框绘制（对齐 rgthree 的实现）。
 // LiteGraph 画节点框发生在 node.draw 之前、且用 node.color/bgcolor —— 若只在 draw 内设色，
 // 节点框早已用默认底色画完，backgroundColor=transparent 时仍会看到不透明的节点框。
@@ -339,6 +353,7 @@ function isGemLabelNode(n) {
 {
     const _origProcessMouseDown = LGraphCanvas.prototype.processMouseDown;
     LGraphCanvas.prototype.processMouseDown = function (e) {
+        if (!gemGraphHasLabel(this?.graph)) return _origProcessMouseDown.apply(this, arguments);
         try {
             const isDbl = this.click_count >= 2 ||
                 (e && typeof e.detail === "number" && e.detail >= 2);
@@ -354,6 +369,7 @@ function isGemLabelNode(n) {
 // Pin（固定）后点击穿透：单击/拖拽时忽略 Label，双击仍可命中以便编辑
 const _origGetNodeOnPos = LGraph.prototype.getNodeOnPos;
 LGraph.prototype.getNodeOnPos = function (x, y, nodes_list) {
+    if (!gemGraphHasLabel(this)) return _origGetNodeOnPos.apply(this, [x, y, nodes_list]);
     if (nodes_list && nodes_list.length) {
         const isDblClick = LiteGraph.getTime() - (LGraphCanvas.active_canvas?.last_mouseclick || 0) < 300;
         if (!isDblClick) {
@@ -374,7 +390,7 @@ function initGemLabelRuntime() {
     document.addEventListener("dblclick", (e) => {
         try {
             const canvas = app?.canvas;
-            if (!canvas?.graph) return;
+            if (!canvas?.graph || !gemGraphHasLabel(canvas.graph)) return;
             const toCanvas = typeof app.clientPosToCanvasPos === "function"
                 ? app.clientPosToCanvasPos([e.clientX, e.clientY])
                 : null;
@@ -401,7 +417,7 @@ function initGemLabelRuntime() {
                 Math.hypot(e.clientX - gemLastDown.x, e.clientY - gemLastDown.y) < 8) {
                 gemLastDown = null;
                 const canvas = app?.canvas;
-                if (!canvas?.graph) return;
+                if (!canvas?.graph || !gemGraphHasLabel(canvas.graph)) return;
                 const toCanvas = typeof app.clientPosToCanvasPos === "function"
                     ? app.clientPosToCanvasPos([e.clientX, e.clientY])
                     : null;
