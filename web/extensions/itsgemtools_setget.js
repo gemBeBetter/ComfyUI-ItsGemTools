@@ -51,17 +51,14 @@ function gemInjectVarRefs(graph, p) {
     } catch (_) { /* 注入失败不阻断运行 */ }
 }
 
-// 隐藏 Get 的 var_ref 输入口（画布干净）：从节点 inputs 移除，prompt 注入时手动补回
+// 隐藏 Get 的 var_ref 输入口（画布干净）：从节点 inputs 移除，prompt 注入时手动补回。
+// 注意：不依赖一次性标记——前端在加载工作流/重建节点时可能从 comfyClass 定义重建
+// inputs（var_ref 会回来），因此每次轮询都重新检查并移除（Get 节点少，开销可忽略）。
 function gemHideVarRefInput(node) {
     try {
-        if (node && node.type === "GetImageVar" && node.__gemVarRefClean) return;
-        if (!node || node.type !== "GetImageVar" || !Array.isArray(node.inputs)) {
-            if (node) node.__gemVarRefClean = true;
-            return;
-        }
+        if (!node || node.type !== "GetImageVar" || !Array.isArray(node.inputs)) return;
         const idx = node.inputs.findIndex((i) => i.name === "var_ref");
         if (idx >= 0) node.inputs.splice(idx, 1);
-        node.__gemVarRefClean = true;
     } catch (_) { /* 忽略 */ }
 }
 
