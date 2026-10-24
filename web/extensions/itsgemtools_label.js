@@ -12,73 +12,47 @@ import { app } from "../../../scripts/app.js";
 const LABEL_TYPE = "Label (ItsGemTools)";
 
 // ------------------------------------------------------------
-// 调试埋点（临时）：写入 window.__gemLabelDbg（DOM 通道，bu/用户 F12 均可读）+ console
-// ------------------------------------------------------------
-window.__gemLabelDbg = window.__gemLabelDbg || [];
-function gemDbg(...args) {
-    try {
-        const s = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
-        window.__gemLabelDbg.push(s);
-        if (window.__gemLabelDbg.length > 200) window.__gemLabelDbg.shift();
-        console.log("[GemLabel]", s);
-    } catch (_) { /* 埋点失败不阻断 */ }
-}
-
-// ------------------------------------------------------------
 // 节点画布坐标 → canvas 元素内像素偏移（多路径，兼容前端 1.55 各版本坐标系统）
 // ------------------------------------------------------------
 function gemNodeToOffset(canvas, pos) {
     const rect = canvas.canvas?.getBoundingClientRect?.();
     const cw = canvas.canvas?.width || 1;
     const ch = canvas.canvas?.height || 1;
-    // 诊断日志（调试期）：定位问题时可从 console 读取真实坐标数据
-    console.log("[GemLabel] rect", rect?.left, rect?.top, rect?.width, rect?.height, "cw", cw, "ch", ch, "pos", JSON.stringify(pos));
     // 路径0：真实渲染矩阵（drawNode 拦截每帧记录；前端 1.55 无任何坐标 API，矩阵是唯一精确源）
     const t = window.__gemLabelCT;
     if (t && typeof t.a === "number" && t.a !== 0) {
-        const r = [
+        return [
             (pos[0] * t.a + t.e) * (rect?.width || 0) / cw,
             (pos[1] * t.d + t.f) * (rect?.height || 0) / ch,
         ];
-        console.log("[GemLabel] path0 matrix", JSON.stringify({ a: t.a, d: t.d, e: t.e, f: t.f }), "->", r);
-        return r;
     }
     // 路径1：LiteGraph 经典 transform（scale 必须有效，防止 scale=0 导致偏移归零）
     const ds = canvas?.ds;
     if (ds && typeof ds.scale === "number" && ds.scale > 0 && Array.isArray(ds.translate)) {
-        const r = [(pos[0] - ds.translate[0]) * ds.scale, (pos[1] - ds.translate[1]) * ds.scale];
-        console.log("[GemLabel] path1 ds", JSON.stringify(ds), "->", r);
-        return r;
+        return [(pos[0] - ds.translate[0]) * ds.scale, (pos[1] - ds.translate[1]) * ds.scale];
     }
     // 路径2：官方 convertCanvasToOffset（返回像素偏移）
     if (typeof canvas?.convertCanvasToOffset === "function") {
         try {
-            const r = canvas.convertCanvasToOffset([pos[0], pos[1]]);
-            console.log("[GemLabel] path2 ->", r);
-            return r;
+            return canvas.convertCanvasToOffset([pos[0], pos[1]]);
         } catch (_) { /* 继续 */ }
     }
     // 路径3：反向方法近似（旧前端）
     if (typeof canvas?.convertOffsetToCanvas === "function") {
         try {
-            const r = canvas.convertOffsetToCanvas([pos[0], pos[1]]);
-            console.log("[GemLabel] path3 ->", r);
-            return r;
+            return canvas.convertOffsetToCanvas([pos[0], pos[1]]);
         } catch (_) { /* 继续 */ }
     }
     // 路径4：兜底——按画布元素尺寸与视口左上角估算
-    const r = [
+    return [
         (pos[0] / cw) * (rect?.width || 800),
         (pos[1] / ch) * (rect?.height || 600),
     ];
-    console.log("[GemLabel] path4 ->", r);
-    return r;
 }
 
 // 通用就地文案编辑（textarea 覆盖节点位置；回车/失焦提交、Esc 取消）
 // 兼容两类节点：真实 ItsGemLabel 实例与新版前端 Vue 模式下的包装节点。
 function startGenericLabelEdit(node, canvas, clientX, clientY) {
-    gemDbg("edit-start", node.type, "pos", JSON.stringify(node.pos), "size", JSON.stringify(node.size));
     if (node._editor) return;
     if (!canvas?.canvas?.parentNode) {
         console.warn("[ItsGemTools.Label] edit: no canvas parent", canvas);
@@ -106,7 +80,6 @@ function startGenericLabelEdit(node, canvas, clientX, clientY) {
     if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
         left = clientX - w / 2;
         top = clientY - h / 2;
-        gemDbg("edit-anchor", "clientX", Math.round(clientX), "clientY", Math.round(clientY), "w", Math.round(w), "h", Math.round(h));
     } else {
         let px;
         try {
@@ -117,7 +90,6 @@ function startGenericLabelEdit(node, canvas, clientX, clientY) {
         left = safeN(rect.left + (px?.[0] ?? (node.pos?.[0] ?? 0) * scale), rect.left + 100);
         top = safeN(rect.top + (px?.[1] ?? (node.pos?.[1] ?? 0) * scale), rect.top + 100);
     }
-    gemDbg("edit-geo", "left", Math.round(left), "top", Math.round(top), "pos", JSON.stringify(node.pos), "zoom", zoom);
     // 编辑框固定白底黑字：任何节点配色下都清晰可读，避免"白底白字"看不见
     editor.style.cssText = [
         "position:fixed",
@@ -165,7 +137,6 @@ function startGenericLabelEdit(node, canvas, clientX, clientY) {
         }
     });
     editor.addEventListener("blur", commit);
-    gemDbg("editor-created", "left", Math.round(left), "top", Math.round(top), "w", Math.round(w), "h", Math.round(h), "zoom", zoom);
     container.appendChild(editor);
     node._editor = editor;
     editor.focus();
@@ -361,10 +332,6 @@ function isGemLabelNode(n) {
     const _origDrawNode = LGraphCanvas.prototype.drawNode;
     LGraphCanvas.prototype.drawNode = function (node, ctx) {
         if (isGemLabelNode(node)) {
-            if (!window.__gemLabelDrawLogged) {
-                window.__gemLabelDrawLogged = true;
-                gemDbg("drawNode-hook", node.type, "pos", JSON.stringify(node.pos), "size", JSON.stringify(node.size));
-            }
             try { window.__gemLabelCT = ctx.getTransform(); } catch (_) { /* 变换不可读则跳过 */ }
             node.bgcolor = "transparent";
             node.color = "transparent";
@@ -387,7 +354,6 @@ function isGemLabelNode(n) {
             const isDbl = this.click_count >= 2 ||
                 (e && typeof e.detail === "number" && e.detail >= 2);
             if (isDbl && this.clicked_node && isGemLabelNode(this.clicked_node)) {
-                gemDbg("pMD-hit", this.clicked_node.type, "pos", JSON.stringify(this.clicked_node.pos));
                 startItsGemLabelEdit(this.clicked_node, this, e?.clientX, e?.clientY);
                 return;
             }
@@ -419,7 +385,6 @@ function initGemLabelRuntime() {
     document.addEventListener("dblclick", (e) => {
         try {
             const canvas = app?.canvas;
-            gemDbg("dblclick", Math.round(e.clientX), Math.round(e.clientY), "appCanvas:", !!canvas, "posFn:", typeof app?.clientPosToCanvasPos);
             if (!canvas?.graph) return;
             const toCanvas = typeof app.clientPosToCanvasPos === "function"
                 ? app.clientPosToCanvasPos([e.clientX, e.clientY])
@@ -455,7 +420,6 @@ function initGemLabelRuntime() {
                     ? findItsGemLabelAt(canvas, toCanvas[0], toCanvas[1])
                     : null;
                 if (node) {
-                    gemDbg("pdown-dbl-hit", node.type);
                     e.preventDefault();
                     e.stopImmediatePropagation();
                     startItsGemLabelEdit(node, canvas, e.clientX, e.clientY);
@@ -472,8 +436,7 @@ function initGemLabelRuntime() {
 app.registerExtension({
     name: "ItsGemTools.Label",
     registerCustomNodes() {
-        gemDbg("ext-loaded");
-        // 运行时初始化：双击监听 + 诊断探针（幂等）
+        // 运行时初始化：双击监听（幂等）
         initGemLabelRuntime();
         // SEO：归入品牌分类（与 KJNodes / rgthree 同款机制），
         // 节点库分类树与搜索按分类聚合时独立成组、字母序排在第三方包之前
