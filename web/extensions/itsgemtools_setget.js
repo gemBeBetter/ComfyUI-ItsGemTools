@@ -28,7 +28,11 @@ function gemReadKey(node) {
 
 function gemInjectVarRefs(graph, p) {
     try {
-        if (!graph || !p || !p.prompt) return;
+        if (!graph || !p) return;
+        // 前端 1.55：graphToPrompt 返回 { workflow, output }，output 即发送给后端的 prompt
+        // （旧版为 { prompt, ... }，兼容两者）
+        const prompt = p.output || p.prompt;
+        if (!prompt) return;
         const nodes = graph._nodes || [];
         // 每个 key 取图中"最后添加"的 Set（后写入的覆盖先写入）
         const setByKey = {};
@@ -43,7 +47,7 @@ function gemInjectVarRefs(graph, p) {
             const key = gemReadKey(n);
             const setNodeId = setByKey[key];
             if (!setNodeId) continue;
-            const gp = p.prompt[String(n.id)];
+            const gp = prompt[String(n.id)];
             if (!gp || !gp.inputs || gp.inputs.var_ref) continue;
             // 链接 Set 的 IMAGE 输出槽 0：只作执行序依赖，Get 忽略该值
             gp.inputs.var_ref = [setNodeId, 0];
