@@ -12,6 +12,19 @@ import { app } from "../../../scripts/app.js";
 const LABEL_TYPE = "Label (ItsGemTools)";
 
 // ------------------------------------------------------------
+// 调试埋点（临时）：写入 window.__gemLabelDbg（DOM 通道，bu/用户 F12 均可读）+ console
+// ------------------------------------------------------------
+window.__gemLabelDbg = window.__gemLabelDbg || [];
+function gemDbg(...args) {
+    try {
+        const s = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
+        window.__gemLabelDbg.push(s);
+        if (window.__gemLabelDbg.length > 200) window.__gemLabelDbg.shift();
+        console.log("[GemLabel]", s);
+    } catch (_) { /* 埋点失败不阻断 */ }
+}
+
+// ------------------------------------------------------------
 // 节点画布坐标 → canvas 元素内像素偏移（多路径，兼容前端 1.55 各版本坐标系统）
 // ------------------------------------------------------------
 function gemNodeToOffset(canvas, pos) {
@@ -65,6 +78,7 @@ function gemNodeToOffset(canvas, pos) {
 // 通用就地文案编辑（textarea 覆盖节点位置；回车/失焦提交、Esc 取消）
 // 兼容两类节点：真实 ItsGemLabel 实例与新版前端 Vue 模式下的包装节点。
 function startGenericLabelEdit(node, canvas) {
+    gemDbg("edit-start", node.type, "pos", JSON.stringify(node.pos), "size", JSON.stringify(node.size));
     if (node._editor) return;
     if (!canvas?.canvas?.parentNode) {
         console.warn("[ItsGemTools.Label] edit: no canvas parent", canvas);
@@ -77,8 +91,11 @@ function startGenericLabelEdit(node, canvas) {
     const props = node.properties || {};
     const fontSize = Math.max(Number(props.fontSize) || 0, 12);
     const fontFamily = props.fontFamily || "Arial";
-    const w = Math.max(node.size[0] * scale + 4, 80);
-    const h = Math.max(node.size[1] * scale + 4, 24);
+    // 显示缩放：优先从真实渲染矩阵推导（zoom = a × rect.width/cw，a 含 dpr 时换算回显示缩放）
+    const ct = window.__gemLabelCT;
+    const zoom = ct && typeof ct.a === "number" && ct.a !== 0 ? ct.a * (rect.width / (canvas.canvas.width || 1)) : scale;
+    const w = Math.max(node.size[0] * (zoom || scale) + 4, 80);
+    const h = Math.max(node.size[1] * (zoom || scale) + 4, 24);
 
     editor.value = String(node.title ?? "").replace(/\\n/g, "\n");
     editor.wrap = "off";
@@ -98,7 +115,7 @@ function startGenericLabelEdit(node, canvas) {
         `top:${top - 2}px`,
         `width:${w}px`,
         `height:${h}px`,
-        `font:${fontSize * scale}px ${fontFamily}`,
+        `font:${fontSize * (zoom || scale)}px ${fontFamily}`,
         "color:#111",
         "background:#fff",
         "border:1px dashed #8a63d2",
@@ -138,6 +155,7 @@ function startGenericLabelEdit(node, canvas) {
         }
     });
     editor.addEventListener("blur", commit);
+    gemDbg("editor-created", "left", Math.round(left), "top", Math.round(top), "w", Math.round(w), "h", Math.round(h), "zoom", zoom);
     container.appendChild(editor);
     node._editor = editor;
     editor.focus();
@@ -333,6 +351,10 @@ function isGemLabelNode(n) {
     const _origDrawNode = LGraphCanvas.prototype.drawNode;
     LGraphCanvas.prototype.drawNode = function (node, ctx) {
         if (isGemLabelNode(node)) {
+            if (!window.__gemLabelDrawLogged) {
+                window.__gemLabelDrawLogged = true;
+                gemDbg("drawNode-hook", node.type, "pos", JSON.stringify(node.pos), "size", JSON.stringify(node.size));
+            }
             try { window.__gemLabelCT = ctx.getTransform(); } catch (_) { /* 变换不可读则跳过 */ }
             node.bgcolor = "transparent";
             node.color = "transparent";
@@ -355,6 +377,7 @@ function isGemLabelNode(n) {
             const isDbl = this.click_count >= 2 ||
                 (e && typeof e.detail === "number" && e.detail >= 2);
             if (isDbl && this.clicked_node && isGemLabelNode(this.clicked_node)) {
+                gemDbg("pMD-hit", this.clicked_node.type, "pos", JSON.stringify(this.clicked_node.pos));
                 startItsGemLabelEdit(this.clicked_node, this);
                 return;
             }
@@ -386,6 +409,7 @@ function initGemLabelRuntime() {
     document.addEventListener("dblclick", (e) => {
         try {
             const canvas = app?.canvas;
+            gemDbg("dblclick", Math.round(e.clientX), Math.round(e.clientY), "appCanvas:", !!canvas, "posFn:", typeof app?.clientPosToCanvasPos);
             if (!canvas?.graph) return;
             const toCanvas = typeof app.clientPosToCanvasPos === "function"
                 ? app.clientPosToCanvasPos([e.clientX, e.clientY])
@@ -421,6 +445,7 @@ function initGemLabelRuntime() {
                     ? findItsGemLabelAt(canvas, toCanvas[0], toCanvas[1])
                     : null;
                 if (node) {
+                    gemDbg("pdown-dbl-hit", node.type);
                     e.preventDefault();
                     e.stopImmediatePropagation();
                     startItsGemLabelEdit(node, canvas);
@@ -437,6 +462,7 @@ function initGemLabelRuntime() {
 app.registerExtension({
     name: "ItsGemTools.Label",
     registerCustomNodes() {
+        gemDbg("ext-loaded");
         // 运行时初始化：双击监听 + 诊断探针（幂等）
         initGemLabelRuntime();
         // SEO：归入品牌分类（与 KJNodes / rgthree 同款机制），
