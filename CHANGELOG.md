@@ -29,6 +29,11 @@
   - **修复**：删除全部特征兜底，Label 识别收紧为 **type / comfyClass / 实例三种精确匹配**；`drawNode` 透明拦截、双击 / `pointerdown` / `processMouseDown` / Pin 穿透等所有入口统一走严格判定，与其它装饰节点彻底隔离。
   - **按需激活**：新增画布级 Label 存在性缓存（`gemGraphHasLabel`）——**画布上没有 Label 节点时所有双击 / 交互监听与拦截立即短路**（零开销、零干扰，不影响添加节点面板、Note / Markdown 等交互）；有 Label 时才全量生效，缓存为 false 时每 1s 惰性重算防漏算。
 
+- **Set / Get Image Variable 传值延迟一轮（换图后 Get 仍读到旧图）**
+  - **根因**：Set 与 Get 之间无连线时，ComfyUI 执行器优先执行"输出链可达"的节点——Get 处于 Save / 处理链上，被 `ux_friendly_pick_node` 优先挑中执行；而 Set 依赖链长、就绪晚，本轮尚未写入新值，导致 Get 读到上一轮的旧值（"延迟一轮"）。
+  - **修复**：新增前端扩展 `itsgemtools_setget.js`，在 `app.graphToPrompt` 层把**同 key 的 Set 的 IMAGE 输出隐形链接到 Get 的 `var_ref` 可选输入**——画布上无任何连线，但执行器因此保证 Set 先执行、Get 后读取，与"直接连线"行为完全一致。`var_ref` 输入口由前端隐藏（nodeCreated + 轮询兜底），Get 忽略该值，纯执行序依赖。
+  - **后端**：`GetImageVar` 增加 optional `var_ref`（IMAGE）输入（不参与读取逻辑）。
+
 - **节点折叠（Collapse）后残留未收起的框线（全部节点）**
   - **根因**：外观主题扩展的 `onDrawForeground` 描边按 `node.size` 画完整圆角框；折叠后 size 高度未收缩，框线残留在标题栏下方。
   - **修复**：`onDrawForeground` 增加折叠判断（`collapsed` / `flags.collapsed`）——折叠时跳过自定义描边，与官方节点折叠行为对齐；展开后自动恢复描边。包内所有节点共用同一皮肤逻辑，一处修复全覆盖。

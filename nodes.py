@@ -1428,6 +1428,12 @@ class GetImageVar:
                     "tooltip": "变量名：与 Set Image Variable 的 key 一致。"
                 }),
             },
+            "optional": {
+                # var_ref：前端扩展在 prompt 层自动把同 key Set 的输出隐形链接到此输入，
+                # 仅用于让 ComfyUI 调度器保证"Set 先执行、Get 后读取"（与直接连线行为一致）。
+                # 本节点忽略其值；输入口由前端隐藏，画布上不可见。
+                "var_ref": ("IMAGE",),
+            },
         }
 
     RETURN_TYPES = ("IMAGE",)
@@ -1440,13 +1446,13 @@ class GetImageVar:
     )
 
     @classmethod
-    def IS_CHANGED(cls, key):
+    def IS_CHANGED(cls, key, var_ref=None):
         # Get 的输入只有 key 这个 widget（每次运行不变），若不禁止缓存，
         # ComfyUI 会跳过执行、永远返回上一次的旧输出（变量更新后取不到新图）。
         # 返回递增计数器：每次执行都重新读取全局变量表。
         return next(_GET_CACHE_BUSTER)
 
-    def get_var(self, key):
+    def get_var(self, key, var_ref=None):
         key = str(key).strip()
         img = _IMAGE_STORE.get(key, _MISSING)
         # 无需等待：Set 是 OUTPUT_NODE（执行根），同一运行内必然先于 Get 执行并写入。
