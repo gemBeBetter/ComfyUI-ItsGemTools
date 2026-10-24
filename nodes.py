@@ -1463,6 +1463,27 @@ class GetImageVar:
         return (img,)
 
 
+class GemLabel:
+    """
+    纯前端标注节点（Label (ItsGemTools)）的后端空实现。
+    实际渲染（透明浮动文字）与双击就地编辑全部由前端扩展
+    (web/extensions/itsgemtools_label.js) 完成，本类不参与任何执行逻辑，
+    仅用于让后端识别该节点类型，避免工作流加载 / 运行时出现
+    "A node type is missing or unavailable" 报错。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {}, "optional": {}}
+
+    RETURN_TYPES = ()
+    FUNCTION = "noop"
+    CATEGORY = "ItsGemTools"
+
+    def noop(self):
+        return ()
+
+
 NODE_CLASS_MAPPINGS = {
     "maskfeather": MaskFeather,
     "SetImageAlpha": SetImageAlpha,
@@ -1477,6 +1498,8 @@ NODE_CLASS_MAPPINGS = {
     "ItsGemImageCompare": ImageCompare,
     "SetImageVar": SetImageVar,
     "GetImageVar": GetImageVar,
+    # 前端纯标注节点：后端空实现，保证后端认识该类型（不报 missing node）
+    "Label (ItsGemTools)": GemLabel,
     # 旧名称保留映射（菜单中隐藏），保证历史保存的工作流仍能加载。
     "SAM3DistanceFeather": MaskFeather,
 }
@@ -1494,6 +1517,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ItsGemImageCompare": "Image Compare A/B",
     "SetImageVar": "Set Image Variable",
     "GetImageVar": "Get Image Variable",
+    "Label (ItsGemTools)": "Label (ItsGemTools)",
     # 空字符串让旧节点名在右键菜单中隐藏，仅作为工作流兼容别名。
     "SAM3DistanceFeather": "",
 }
