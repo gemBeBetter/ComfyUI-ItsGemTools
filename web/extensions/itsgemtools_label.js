@@ -41,10 +41,12 @@ function startGenericLabelEdit(node, canvas) {
         px = canvas.convertOffsetToCanvas([node.pos[0], node.pos[1]]);
     }
     // 编辑框固定白底黑字：任何节点配色下都清晰可读，避免"白底白字"看不见
+    // 注意：convertCanvasToOffset 返回的已是"画布元素内缩放后的像素偏移"，直接加 canvas 视口位置即可，
+    // 不能再乘 scale（否则偏移被放大两遍，编辑框会飞到远处）。
     editor.style.cssText = [
         "position:fixed",
-        `left:${rect.left + px[0] * scale - 2}px`,
-        `top:${rect.top + px[1] * scale - 2}px`,
+        `left:${rect.left + px[0] - 2}px`,
+        `top:${rect.top + px[1] - 2}px`,
         `width:${w}px`,
         `height:${h}px`,
         `font:${fontSize * scale}px ${fontFamily}`,
