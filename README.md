@@ -150,7 +150,7 @@ Set Image Variable（key=my_image，image=任意 IMAGE）→ 串在流程中
 - 存储位于内存，重启 ComfyUI 后清空
 
 ### Label（节点键 `Label (ItsGemTools)`）
-浮动文字标签，给工作流分区、写说明用；**纯前端节点**（不参与执行、无后端类），文本 = 节点标题：
+浮动文字标签，给工作流分区、写说明用；**渲染与编辑全在前端完成**（后端仅注册空实现类让后端认识类型，不参与任何执行逻辑），文本 = 节点标题：
 - **改文案**：双击节点 → 就地弹出输入框，改完**按回车或点击节点外区域**立即生效，Esc 取消；标题支持 `\n` 字面序列换行
 - **改样式**：右键 → Properties：字号 / 字体 / 字色 / 对齐（left / center / right）/ 背景色 / 内边距 / 圆角 / 角度（度）
 - **半透明**：颜色支持 8 位 HEX——`#FFFFFF` 不透明白，`#FFFFFF88` 半透明白、`#00000066` 半透明黑（背景与文字均支持）
@@ -177,7 +177,7 @@ Set Image Variable（key=my_image，image=任意 IMAGE）→ 串在流程中
 | Set Image Alpha / Set Masked Alpha | torch | ComfyUI 自带 |
 | Before/After Preview | torch | ComfyUI 自带 |
 | Image Compare A/B | 前端内联 | 面板预览纯浏览器 JS，零依赖 |
-| Label | 前端内联 | 纯前端虚拟节点，画布自绘，零依赖、不参与执行 |
+| Label | 前端内联 | 前端画布自绘、双击编辑；后端仅注册空实现类，不参与执行 |
 
 ### 前端依赖
 

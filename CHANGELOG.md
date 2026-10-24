@@ -20,6 +20,10 @@
   - **修复**：编辑框改为**直接锚定双击点**（用户双击哪里，编辑框就出现在哪里，绝对可见）；坐标矩阵 / 比例换算降级为无双击点场景的兜底，并加 NaN 守卫保证编辑框必然出现。
   - **配套**：三层双击命中（浏览器 `dblclick` 捕获 / 自研 `pointerdown` 双击判定 / `processMouseDown` 拦截），双击后回车或点击节点外区域提交生效、Esc 取消。
 
+- **含 Label 的工作流报 "A node type is missing or unavailable"**
+  - **根因**：Label 为纯前端节点，后端（Python）不认识 `Label (ItsGemTools)` 类型；前端 frontend_only 特殊通道在本环境未兜住，加载 / 运行时后端校验 prompt 即报缺失节点。
+  - **修复**：后端注册同键空实现类（`GemLabel`，`RETURN_TYPES=()`、`noop()` 无操作）——后端认识类型即不再报错；实际渲染与双击编辑仍完全由前端扩展完成，后端类不参与任何执行逻辑。
+
 - **Set / Get Image Variable 不连线时取不到图（本次核心修复）**
   - **根因**：ComfyUI 只执行"输出可达节点集"——执行列表从 `OUTPUT_NODE`（如 Preview / SaveImage）出发沿输入依赖反向构建。`Set Image Variable` 的输出若不连线到任何输出节点，会被调度器判定为孤立节点而**完全不执行**，导致全局变量表永远为空，`Get Image Variable` 只能输出 1×1 占位黑图。
   - **修复**：`SetImageVar` 标记为 `OUTPUT_NODE`（执行根）。Set 现在**必然执行**，且在同一批就绪节点中**优先于 Get** 执行（ComfyUI 对输出节点优先调度）。无需连线、无需等待、无依赖，行为与"直接连线"完全一致。
