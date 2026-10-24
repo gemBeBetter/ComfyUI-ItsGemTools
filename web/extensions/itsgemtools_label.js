@@ -12,9 +12,34 @@ import { app } from "../../../scripts/app.js";
 const LABEL_TYPE = "Label (ItsGemTools)";
 
 // ------------------------------------------------------------
+// 节点画布坐标 → canvas 元素内像素偏移（多路径，兼容前端 1.55 各版本坐标系统）
+// ------------------------------------------------------------
+function gemNodeToOffset(canvas, pos) {
+    // 路径1：LiteGraph 经典 transform（最可靠）：offset = (pos - translate) * scale
+    const ds = canvas?.ds;
+    if (ds && typeof ds.scale === "number" && Array.isArray(ds.translate)) {
+        return [(pos[0] - ds.translate[0]) * ds.scale, (pos[1] - ds.translate[1]) * ds.scale];
+    }
+    // 路径2：官方 convertCanvasToOffset（返回像素偏移）
+    if (typeof canvas?.convertCanvasToOffset === "function") {
+        try { return canvas.convertCanvasToOffset([pos[0], pos[1]]); } catch (_) { /* 继续 */ }
+    }
+    // 路径3：反向方法近似（旧前端）
+    if (typeof canvas?.convertOffsetToCanvas === "function") {
+        try { return canvas.convertOffsetToCanvas([pos[0], pos[1]]); } catch (_) { /* 继续 */ }
+    }
+    // 路径4：兜底——按画布元素尺寸与视口左上角估算
+    const rect = canvas.canvas?.getBoundingClientRect?.();
+    const cw = canvas.canvas?.width || 1;
+    const ch = canvas.canvas?.height || 1;
+    return [
+        (pos[0] / cw) * (rect?.width || 800),
+        (pos[1] / ch) * (rect?.height || 600),
+    ];
+}
+
 // 通用就地文案编辑（textarea 覆盖节点位置；回车/失焦提交、Esc 取消）
 // 兼容两类节点：真实 ItsGemLabel 实例与新版前端 Vue 模式下的包装节点。
-// ------------------------------------------------------------
 function startGenericLabelEdit(node, canvas) {
     if (node._editor) return;
     if (!canvas?.canvas?.parentNode) {
@@ -33,20 +58,20 @@ function startGenericLabelEdit(node, canvas) {
 
     editor.value = String(node.title ?? "").replace(/\\n/g, "\n");
     editor.wrap = "off";
-    // 坐标换算：优先 convertCanvasToOffset（画布坐标→元素内像素偏移）；旧前端无此方法时兜底反向方法
+    // 坐标换算：多路径求像素偏移；即使全失败也退化为"节点画布坐标×显示缩放"的近似，绝不空手
     let px;
-    if (typeof canvas.convertCanvasToOffset === "function") {
-        px = canvas.convertCanvasToOffset([node.pos[0], node.pos[1]]);
-    } else {
-        px = canvas.convertOffsetToCanvas([node.pos[0], node.pos[1]]);
+    try {
+        px = gemNodeToOffset(canvas, [node.pos[0], node.pos[1]]);
+    } catch (_) {
+        px = null;
     }
+    const left = rect.left + (px?.[0] ?? node.pos[0] * scale);
+    const top = rect.top + (px?.[1] ?? node.pos[1] * scale);
     // 编辑框固定白底黑字：任何节点配色下都清晰可读，避免"白底白字"看不见
-    // 注意：convertCanvasToOffset 返回的已是"画布元素内缩放后的像素偏移"，直接加 canvas 视口位置即可，
-    // 不能再乘 scale（否则偏移被放大两遍，编辑框会飞到远处）。
     editor.style.cssText = [
         "position:fixed",
-        `left:${rect.left + px[0] - 2}px`,
-        `top:${rect.top + px[1] - 2}px`,
+        `left:${left - 2}px`,
+        `top:${top - 2}px`,
         `width:${w}px`,
         `height:${h}px`,
         `font:${fontSize * scale}px ${fontFamily}`,
