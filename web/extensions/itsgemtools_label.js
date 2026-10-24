@@ -24,8 +24,6 @@ function startGenericLabelEdit(node, canvas) {
     const editor = document.createElement("textarea");
     const container = canvas.canvas.parentNode;
     const rect = canvas.canvas.getBoundingClientRect();
-    // 节点画布坐标 → 画布元素内像素偏移（注意方向：convertCanvasToOffset，不是 convertOffsetToCanvas）
-    const px = canvas.convertCanvasToOffset([node.pos[0], node.pos[1]]);
     const scale = rect.width / (canvas.canvas.width || 1);
     const props = node.properties || {};
     const fontSize = Math.max(Number(props.fontSize) || 0, 12);
@@ -35,6 +33,13 @@ function startGenericLabelEdit(node, canvas) {
 
     editor.value = String(node.title ?? "").replace(/\\n/g, "\n");
     editor.wrap = "off";
+    // 坐标换算：优先 convertCanvasToOffset（画布坐标→元素内像素偏移）；旧前端无此方法时兜底反向方法
+    let px;
+    if (typeof canvas.convertCanvasToOffset === "function") {
+        px = canvas.convertCanvasToOffset([node.pos[0], node.pos[1]]);
+    } else {
+        px = canvas.convertOffsetToCanvas([node.pos[0], node.pos[1]]);
+    }
     // 编辑框固定白底黑字：任何节点配色下都清晰可读，避免"白底白字"看不见
     editor.style.cssText = [
         "position:fixed",
@@ -104,7 +109,7 @@ function findItsGemLabelAt(canvas, canvasX, canvasY) {
     const nodes = canvas.graph._nodes || [];
     for (let i = nodes.length - 1; i >= 0; i--) {
         const n = nodes[i];
-        if (!n || n.type !== LABEL_TYPE) continue;
+        if (!n || !isGemLabelNode(n)) continue;
         if (canvasX >= n.pos[0] && canvasX <= n.pos[0] + (n.size[0] || 0) &&
             canvasY >= n.pos[1] && canvasY <= n.pos[1] + (n.size[1] || 0)) {
             return n;
@@ -249,6 +254,18 @@ ItsGemLabel.collapsable = false;
 ItsGemLabel.category = "ItsGemTools";
 ItsGemLabel._category = "ItsGemTools";
 
+// 宽匹配识别 Label 节点：前端 1.55 在 Vue 渲染模式下节点的 type 可能被改为
+// "frontend_only"（画布标注 "#90 frontend_only" 的来源），type 并不可靠；
+// 对齐 rgthree 的做法改用 constructor / instanceof 识别，并保留 type / comfyClass 兜底。
+function isGemLabelNode(n) {
+    return !!n && (
+        n.type === LABEL_TYPE ||
+        n.comfyClass === LABEL_TYPE ||
+        n.constructor === ItsGemLabel ||
+        n instanceof ItsGemLabel
+    );
+}
+
 // 关键：拦截节点框绘制（对齐 rgthree 的实现）。
 // LiteGraph 画节点框发生在 node.draw 之前、且用 node.color/bgcolor —— 若只在 draw 内设色，
 // 节点框早已用默认底色画完，backgroundColor=transparent 时仍会看到不透明的节点框。
@@ -256,7 +273,7 @@ ItsGemLabel._category = "ItsGemTools";
 {
     const _origDrawNode = LGraphCanvas.prototype.drawNode;
     LGraphCanvas.prototype.drawNode = function (node, ctx) {
-        if (node && node.type === LABEL_TYPE) {
+        if (isGemLabelNode(node)) {
             node.bgcolor = "transparent";
             node.color = "transparent";
             const v = _origDrawNode.apply(this, arguments);
@@ -277,7 +294,7 @@ ItsGemLabel._category = "ItsGemTools";
         try {
             const isDbl = this.click_count >= 2 ||
                 (e && typeof e.detail === "number" && e.detail >= 2);
-            if (isDbl && this.clicked_node?.type === LABEL_TYPE) {
+            if (isDbl && this.clicked_node && isGemLabelNode(this.clicked_node)) {
                 startItsGemLabelEdit(this.clicked_node, this);
                 return;
             }
@@ -292,7 +309,7 @@ LGraph.prototype.getNodeOnPos = function (x, y, nodes_list) {
     if (nodes_list && nodes_list.length) {
         const isDblClick = LiteGraph.getTime() - (LGraphCanvas.active_canvas?.last_mouseclick || 0) < 300;
         if (!isDblClick) {
-            nodes_list = nodes_list.filter((n) => !(n?.type === LABEL_TYPE && n.flags?.pinned));
+            nodes_list = nodes_list.filter((n) => !(isGemLabelNode(n) && n.flags?.pinned));
         }
     }
     return _origGetNodeOnPos.apply(this, [x, y, nodes_list]);
