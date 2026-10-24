@@ -39,6 +39,11 @@ function installSkin(node) {
     const orig = typeof node.onDrawForeground === "function" ? node.onDrawForeground : null;
     node.onDrawForeground = function (ctx, canvas) {
         try {
+            // 折叠（Collapse）时跳过自定义描边：前端折叠只保留标题栏，
+            // 若仍按 size 画整框会残留一条未收起的框线（与官方节点折叠行为对齐）。
+            if (this.collapsed || this.flags?.collapsed) {
+                return orig ? orig.call(this, ctx, canvas) : undefined;
+            }
             const s = this.size || [0, 0];
             if (s[0] > 0 && s[1] > 0) {
                 ctx.save();

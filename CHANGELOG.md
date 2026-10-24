@@ -29,6 +29,10 @@
   - **修复**：删除全部特征兜底，Label 识别收紧为 **type / comfyClass / 实例三种精确匹配**；`drawNode` 透明拦截、双击 / `pointerdown` / `processMouseDown` / Pin 穿透等所有入口统一走严格判定，与其它装饰节点彻底隔离。
   - **按需激活**：新增画布级 Label 存在性缓存（`gemGraphHasLabel`）——**画布上没有 Label 节点时所有双击 / 交互监听与拦截立即短路**（零开销、零干扰，不影响添加节点面板、Note / Markdown 等交互）；有 Label 时才全量生效，缓存为 false 时每 1s 惰性重算防漏算。
 
+- **节点折叠（Collapse）后残留未收起的框线（全部节点）**
+  - **根因**：外观主题扩展的 `onDrawForeground` 描边按 `node.size` 画完整圆角框；折叠后 size 高度未收缩，框线残留在标题栏下方。
+  - **修复**：`onDrawForeground` 增加折叠判断（`collapsed` / `flags.collapsed`）——折叠时跳过自定义描边，与官方节点折叠行为对齐；展开后自动恢复描边。包内所有节点共用同一皮肤逻辑，一处修复全覆盖。
+
 - **Set / Get Image Variable 不连线时取不到图（本次核心修复）**
   - **根因**：ComfyUI 只执行"输出可达节点集"——执行列表从 `OUTPUT_NODE`（如 Preview / SaveImage）出发沿输入依赖反向构建。`Set Image Variable` 的输出若不连线到任何输出节点，会被调度器判定为孤立节点而**完全不执行**，导致全局变量表永远为空，`Get Image Variable` 只能输出 1×1 占位黑图。
   - **修复**：`SetImageVar` 标记为 `OUTPUT_NODE`（执行根）。Set 现在**必然执行**，且在同一批就绪节点中**优先于 Get** 执行（ComfyUI 对输出节点优先调度）。无需连线、无需等待、无依赖，行为与"直接连线"完全一致。
