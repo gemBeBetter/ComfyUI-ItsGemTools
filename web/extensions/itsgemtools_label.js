@@ -24,18 +24,18 @@ function startGenericLabelEdit(node, canvas) {
     const editor = document.createElement("textarea");
     const container = canvas.canvas.parentNode;
     const rect = canvas.canvas.getBoundingClientRect();
-    const px = canvas.convertOffsetToCanvas([node.pos[0], node.pos[1]]);
+    // 节点画布坐标 → 画布元素内像素偏移（注意方向：convertCanvasToOffset，不是 convertOffsetToCanvas）
+    const px = canvas.convertCanvasToOffset([node.pos[0], node.pos[1]]);
     const scale = rect.width / (canvas.canvas.width || 1);
     const props = node.properties || {};
     const fontSize = Math.max(Number(props.fontSize) || 0, 12);
     const fontFamily = props.fontFamily || "Arial";
-    const fontColor = props.fontColor || "#ffffff";
-    const backgroundColor = props.backgroundColor || "";
     const w = Math.max(node.size[0] * scale + 4, 80);
     const h = Math.max(node.size[1] * scale + 4, 24);
 
     editor.value = String(node.title ?? "").replace(/\\n/g, "\n");
     editor.wrap = "off";
+    // 编辑框固定白底黑字：任何节点配色下都清晰可读，避免"白底白字"看不见
     editor.style.cssText = [
         "position:fixed",
         `left:${rect.left + px[0] * scale - 2}px`,
@@ -43,8 +43,8 @@ function startGenericLabelEdit(node, canvas) {
         `width:${w}px`,
         `height:${h}px`,
         `font:${fontSize * scale}px ${fontFamily}`,
-        `color:${fontColor}`,
-        `background:${backgroundColor === "transparent" ? "rgba(30,30,40,0.85)" : backgroundColor}`,
+        "color:#111",
+        "background:#fff",
         "border:1px dashed #8a63d2",
         "border-radius:4px",
         "outline:none",
@@ -138,10 +138,8 @@ class ItsGemLabel extends LGraphNode {
 
     // ---------- 绘制（功能等效 rgthree Label，MIT 参考，自行实现） ----------
     draw(ctx) {
+        // 节点框的透明由 drawNode 拦截层在画框前设置（color/bgcolor = "transparent"），此处不再改写
         this.flags.allow_interaction = !this.flags.pinned;
-        // 节点本体保持全透明（标签完全由下方文本/背景自绘）
-        this.color = "#fff0";
-        this.bgcolor = "#fff0";
         ctx.save();
 
         const fontSize = Math.max(Number(this.properties.fontSize) || 0, 1);
@@ -176,8 +174,20 @@ class ItsGemLabel extends LGraphNode {
             ctx.fill();
         }
 
+        // 同色保护：字体色与背景色相同时自动反色，避免"白底白字"看不清
+        let textColor = fontColor;
+        if (backgroundColor && fontColor) {
+            const norm = (c) => String(c).replace(/^#/, "").slice(0, 6).toLowerCase();
+            if (norm(fontColor) === norm(backgroundColor)) {
+                const r = parseInt(norm(fontColor).slice(0, 2), 16) || 0;
+                const g = parseInt(norm(fontColor).slice(2, 4), 16) || 0;
+                const b = parseInt(norm(fontColor).slice(4, 6), 16) || 0;
+                textColor = (r + g + b) / 3 > 128 ? "#000000" : "#ffffff";
+            }
+        }
+
         ctx.textBaseline = "top";
-        ctx.fillStyle = fontColor;
+        ctx.fillStyle = textColor;
         let textX = padding;
         if (textAlign === "center") {
             ctx.textAlign = "center";
@@ -239,6 +249,26 @@ ItsGemLabel.collapsable = false;
 ItsGemLabel.category = "ItsGemTools";
 ItsGemLabel._category = "ItsGemTools";
 
+// 关键：拦截节点框绘制（对齐 rgthree 的实现）。
+// LiteGraph 画节点框发生在 node.draw 之前、且用 node.color/bgcolor —— 若只在 draw 内设色，
+// 节点框早已用默认底色画完，backgroundColor=transparent 时仍会看到不透明的节点框。
+// 因此在画框前把 color/bgcolor 设为 "transparent"，画框后再手动调用 node.draw 自绘文字/背景。
+{
+    const _origDrawNode = LGraphCanvas.prototype.drawNode;
+    LGraphCanvas.prototype.drawNode = function (node, ctx) {
+        if (node && node.type === LABEL_TYPE) {
+            node.bgcolor = "transparent";
+            node.color = "transparent";
+            const v = _origDrawNode.apply(this, arguments);
+            try {
+                if (typeof node.draw === "function") node.draw(ctx);
+            } catch (err) { /* 自绘失败不阻断画布 */ }
+            return v;
+        }
+        return _origDrawNode.apply(this, arguments);
+    };
+}
+
 // 兜底钩子：若前端事件流仍走 LiteGraph processMouseDown 路径，这里拦截"双击 Label"。
 // 判断用 type（兼容 Vue 包装节点），命中即就地编辑并跳过默认行为。
 {
@@ -268,22 +298,12 @@ LGraph.prototype.getNodeOnPos = function (x, y, nodes_list) {
     return _origGetNodeOnPos.apply(this, [x, y, nodes_list]);
 };
 
-// 运行时初始化：创建诊断探针 + 注册双击监听。
+// 运行时初始化：注册双击监听。
 // 放在 registerCustomNodes 内执行（该生命周期在前端 1.55 一定被调用；setup 可能不被调用）。
 // 幂等：只初始化一次。
 function initGemLabelRuntime() {
     if (window.__gemLabelInit) return;
     window.__gemLabelInit = true;
-    // 诊断探针：页内可见文本，用于绕过 console 缓冲不可靠的问题（调试期使用，交付前移除）
-    let probe = document.getElementById("gem-label-probe");
-    if (!probe) {
-        probe = document.createElement("div");
-        probe.id = "gem-label-probe";
-        probe.style.cssText = "position:fixed;left:4px;bottom:26px;z-index:99999;background:#111;color:#0f0;font:10px monospace;padding:4px 6px;max-width:88%;white-space:pre;pointer-events:none;";
-        document.body.appendChild(probe);
-    }
-    const probeSet = (msg) => { probe.textContent = "[probe] " + msg; };
-    probeSet("v3 init ok (from registerCustomNodes)");
     // 双击检测第 1 层：浏览器原生 dblclick（用户手动双击时可靠；自动化合成可能间隔超标）
     // 捕获阶段先于任何前端监听器执行，命中 Label 双击即就地编辑并阻断默认面板行为。
     document.addEventListener("dblclick", (e) => {
@@ -296,7 +316,6 @@ function initGemLabelRuntime() {
             const node = toCanvas
                 ? findItsGemLabelAt(canvas, toCanvas[0], toCanvas[1])
                 : null;
-            probeSet("dblclick " + e.clientX + "," + e.clientY + " -> " + (toCanvas ? toCanvas.join(",") : "null") + " hit=" + (node ? node.title : "null"));
             if (node) {
                 e.preventDefault();
                 e.stopImmediatePropagation();
@@ -317,16 +336,13 @@ function initGemLabelRuntime() {
                 Math.hypot(e.clientX - gemLastDown.x, e.clientY - gemLastDown.y) < 8) {
                 gemLastDown = null;
                 const canvas = app?.canvas;
-                if (!canvas?.graph) { probeSet("no canvas"); return; }
+                if (!canvas?.graph) return;
                 const toCanvas = typeof app.clientPosToCanvasPos === "function"
                     ? app.clientPosToCanvasPos([e.clientX, e.clientY])
                     : null;
-                const nodes = canvas.graph._nodes || [];
-                const types = nodes.map((n) => n.type).join(" | ");
                 const node = toCanvas
                     ? findItsGemLabelAt(canvas, toCanvas[0], toCanvas[1])
                     : null;
-                probeSet("dbl-down " + (toCanvas ? toCanvas.join(",") : "null") + " hit=" + (node ? node.title : "null") + " types=" + types);
                 if (node) {
                     e.preventDefault();
                     e.stopImmediatePropagation();
