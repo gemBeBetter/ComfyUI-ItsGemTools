@@ -20,6 +20,16 @@ function gemNodeToOffset(canvas, pos) {
     const ch = canvas.canvas?.height || 1;
     // 诊断日志（调试期）：定位问题时可从 console 读取真实坐标数据
     console.log("[GemLabel] rect", rect?.left, rect?.top, rect?.width, rect?.height, "cw", cw, "ch", ch, "pos", JSON.stringify(pos));
+    // 路径0：真实渲染矩阵（drawNode 拦截每帧记录；前端 1.55 无任何坐标 API，矩阵是唯一精确源）
+    const t = window.__gemLabelCT;
+    if (t && typeof t.a === "number" && t.a !== 0) {
+        const r = [
+            (pos[0] * t.a + t.e) * (rect?.width || 0) / cw,
+            (pos[1] * t.d + t.f) * (rect?.height || 0) / ch,
+        ];
+        console.log("[GemLabel] path0 matrix", JSON.stringify({ a: t.a, d: t.d, e: t.e, f: t.f }), "->", r);
+        return r;
+    }
     // 路径1：LiteGraph 经典 transform（scale 必须有效，防止 scale=0 导致偏移归零）
     const ds = canvas?.ds;
     if (ds && typeof ds.scale === "number" && ds.scale > 0 && Array.isArray(ds.translate)) {
@@ -323,6 +333,7 @@ function isGemLabelNode(n) {
     const _origDrawNode = LGraphCanvas.prototype.drawNode;
     LGraphCanvas.prototype.drawNode = function (node, ctx) {
         if (isGemLabelNode(node)) {
+            try { window.__gemLabelCT = ctx.getTransform(); } catch (_) { /* 变换不可读则跳过 */ }
             node.bgcolor = "transparent";
             node.color = "transparent";
             const v = _origDrawNode.apply(this, arguments);
