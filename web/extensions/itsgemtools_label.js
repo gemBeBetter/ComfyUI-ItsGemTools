@@ -104,18 +104,23 @@ function startItsGemLabelEdit(node, canvas) {
 
 // 画布坐标命中 Label：新前端（Vue 渲染模式）下节点不保证是 ItsGemLabel 实例，
 // 因此不用 instanceof / getNodeOnPos（两者都可能失效），改为 type + 包围盒直接命中。
+// 命中优先级：① 我们的 Label（isGemLabelNode）；② 任何无输入输出的纯装饰节点（历史遗留 frontend_only 占位，双击照常可编辑文字）。
 function findItsGemLabelAt(canvas, canvasX, canvasY) {
     if (!canvas?.graph) return null;
     const nodes = canvas.graph._nodes || [];
+    let fallback = null;
     for (let i = nodes.length - 1; i >= 0; i--) {
         const n = nodes[i];
-        if (!n || !isGemLabelNode(n)) continue;
-        if (canvasX >= n.pos[0] && canvasX <= n.pos[0] + (n.size[0] || 0) &&
-            canvasY >= n.pos[1] && canvasY <= n.pos[1] + (n.size[1] || 0)) {
-            return n;
+        if (!n) continue;
+        const inBox = canvasX >= n.pos[0] && canvasX <= n.pos[0] + (n.size[0] || 0) &&
+            canvasY >= n.pos[1] && canvasY <= n.pos[1] + (n.size[1] || 0);
+        if (!inBox) continue;
+        if (isGemLabelNode(n)) return n;
+        if (!fallback && (n.inputs?.length === 0 || !n.inputs) && (n.outputs?.length === 0 || !n.outputs)) {
+            fallback = n;
         }
     }
-    return null;
+    return fallback;
 }
 
 class ItsGemLabel extends LGraphNode {
