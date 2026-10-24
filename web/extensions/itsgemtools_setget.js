@@ -26,6 +26,14 @@ function gemReadKey(node) {
     }
 }
 
+// 前端 graphToPrompt 的 prompt key：根图节点 = String(node.id)；子图节点带前缀 "graphId:nodeId"
+function gemPromptKey(node, rootGraph) {
+    const g = node.graph;
+    return g && rootGraph && g !== rootGraph && g.id
+        ? `${g.id}:${String(node.id)}`
+        : String(node.id);
+}
+
 function gemInjectVarRefs(graph, p) {
     try {
         if (!graph || !p) return;
@@ -33,13 +41,19 @@ function gemInjectVarRefs(graph, p) {
         // （旧版为 { prompt, ... }，兼容两者）
         const prompt = p.output || p.prompt;
         if (!prompt) return;
+        const rootGraph = app.rootGraph || app.graph;
         const nodes = graph._nodes || [];
-        // 每个 key 取图中"最后添加"的 Set（后写入的覆盖先写入）
+        // 每个 key 取图中"最后添加"的 Set（后写入的覆盖先写入）。
+        // 仅收录"确实存在于 prompt"里的 Set（bypass / 禁用的节点不会序列化，
+        // 若注入指向它们会导致后端校验失败，因此必须跳过）。
         const setByKey = {};
         for (const n of nodes) {
             if (n.type !== "SetImageVar") continue;
             const key = gemReadKey(n);
-            if (key) setByKey[key] = String(n.id);
+            const keyId = gemPromptKey(n, rootGraph);
+            if (key && keyId && Object.hasOwn(prompt, keyId)) {
+                setByKey[key] = keyId;
+            }
         }
         if (!Object.keys(setByKey).length) return;
         for (const n of nodes) {
@@ -47,12 +61,14 @@ function gemInjectVarRefs(graph, p) {
             const key = gemReadKey(n);
             const setNodeId = setByKey[key];
             if (!setNodeId) continue;
-            const gp = prompt[String(n.id)];
+            const gp = prompt[gemPromptKey(n, rootGraph)];
             if (!gp || !gp.inputs || gp.inputs.var_ref) continue;
             // 链接 Set 的 IMAGE 输出槽 0：只作执行序依赖，Get 忽略该值
             gp.inputs.var_ref = [setNodeId, 0];
         }
-    } catch (_) { /* 注入失败不阻断运行 */ }
+    } catch (e) {
+        console?.warn?.("[ItsGemTools] var_ref inject failed:", e);
+    }
 }
 
 // 隐藏 Get 的 var_ref 输入口（画布干净）：从节点 inputs 移除，prompt 注入时手动补回。
