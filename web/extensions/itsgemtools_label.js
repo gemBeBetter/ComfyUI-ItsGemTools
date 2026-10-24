@@ -94,8 +94,9 @@ function startGenericLabelEdit(node, canvas) {
     // 显示缩放：优先从真实渲染矩阵推导（zoom = a × rect.width/cw，a 含 dpr 时换算回显示缩放）
     const ct = window.__gemLabelCT;
     const zoom = ct && typeof ct.a === "number" && ct.a !== 0 ? ct.a * (rect.width / (canvas.canvas.width || 1)) : scale;
-    const w = Math.max(node.size[0] * (zoom || scale) + 4, 80);
-    const h = Math.max(node.size[1] * (zoom || scale) + 4, 24);
+    const safeN = (v, fb) => (Number.isFinite(v) ? v : fb);
+    const w = safeN(Math.max(node.size?.[0] * (zoom || scale) + 4, 80), 200);
+    const h = safeN(Math.max(node.size?.[1] * (zoom || scale) + 4, 24), 60);
 
     editor.value = String(node.title ?? "").replace(/\\n/g, "\n");
     editor.wrap = "off";
@@ -106,8 +107,9 @@ function startGenericLabelEdit(node, canvas) {
     } catch (_) {
         px = null;
     }
-    const left = rect.left + (px?.[0] ?? node.pos[0] * scale);
-    const top = rect.top + (px?.[1] ?? node.pos[1] * scale);
+    const left = safeN(rect.left + (px?.[0] ?? node.pos?.[0] * scale), rect.left + 100);
+    const top = safeN(rect.top + (px?.[1] ?? node.pos?.[1] * scale), rect.top + 100);
+    gemDbg("edit-geo", "left", Math.round(left), "top", Math.round(top), "pos", JSON.stringify(node.pos), "px", JSON.stringify(px), "zoom", zoom);
     // 编辑框固定白底黑字：任何节点配色下都清晰可读，避免"白底白字"看不见
     editor.style.cssText = [
         "position:fixed",
