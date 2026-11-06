@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-06
+
 ### 新增
 
 - **redraw 工作层取整对齐 AusBoss，消除 case2 下半身斜向模糊/重影**——case2（源图 1088×1920→8MP，tile4/ov256）成图（2129×3759）腰以下裙子/手/麦克风出现沿手臂/手套斜向轮廓的半透明羽化模糊。
@@ -11,7 +13,7 @@
   - **决定性对照**：用 AusBoss 节点、同图同 seed 同参数（8MP/tile4/ov256）跑，AusBoss 干净。逐行对比定位到 redraw 尺寸口径差异：旧 `_gem_megapixel_size` 用"比例误差优先枚举"，该 case 选 2144×**3776**（tile2 起点 1760、共享区 256）；AusBoss 用宽高各自独立 half-up，得 2144×**3744**（tile2 起点 1728、共享区 288），手臂斜向结构在 tile2 里有更多上方上下文，避开重绘失败。
   - **修复（只改 ItsGemTools，AusBoss 零改动）**：新增 `_gem_redraw_size`（独立 half-up，复刻 AusBoss `megapixel_size`），plan 的 redraw 工作层改用它；**result 严格等比层（result_multiple=1）不动**，成图仍零比例误差（case2 实测 0.0016%），redraw 只是内部工作层、最后 resample 到 result。离线确认 case2/图1 的 redraw 与 boxes 均与 AusBoss 完全一致。
   - **验证**：py_compile 通过；核心回归 42/42；verify_fullband_align_shift / mask_gap / ghost_fix / edge_fix_unit 全 exit=0。**用户实测待进行**。
-——用户在 `qwen21_v3_人脸_发丝` 工作流（8MP/tile4/ov256）跑出正常眼睛上方半透明半睁的第二双眼（带矩形羽化暗块），决定性证据是**全带（blend_band=0）、进 Calibrator 之前的纯 Stitch 输出就有鬼影**，排除 Calibrator 与全/窄带差异，确认是单 tile 模型幻觉：
+  - ——用户在 `qwen21_v3_人脸_发丝` 工作流（8MP/tile4/ov256）跑出正常眼睛上方半透明半睁的第二双眼（带矩形羽化暗块），决定性证据是**全带（blend_band=0）、进 Calibrator 之前的纯 Stitch 输出就有鬼影**，排除 Calibrator 与全/窄带差异，确认是单 tile 模型幻觉：
   - **几何根因**：该场景自然布局是 1×2 宽 tile（2464×1792=4.415MP，无垂直缝），但旧的 3MP 安全线把它钳制降成 2×2 窄 tile（1376×1792），**垂直缝（x≈1081）切到右眼**；窄 tile 只看得到半张脸、缺全局上下文，按"人像"语义脑补出第二双眼，且该位置在 tile 内部非共享区（全带 ramp 权重=1.000），拼接无法稀释。
   - **对齐 AusBoss**：AusBoss 的 tile 上限 = `tile_mp × TILE_SLACK(1.125) × SNAP_SLACK(1.03)`（tile4=4.635MP），不做额外面积钳制，自然宽 tile 保留、无垂直缝。把 `_GEM_SAFE_TILE_PX` 改为 4_600_000：自然宽 tile 4.415MP 通过、无垂直缝；`tile_megapixels=8` 翻倍单块（8.096MP）仍 >4.6 被钳。可能的小幅漂移由 Stitch 端 tile-to-tile 配准（AusBoss 没有的安全网）纠正。
   - **否决的弯路**：宽 tile 面积豁免（近方形宽 tile 实测系统性横向漂移 +1.6~2.9px，会让偏移回归，已回退）；overlap 256→384 让眼睛进入共享区、明显鬼影消失但仍有残留（幻觉结构在非共享区部分）；成图后局部 inpaint（矩形暗块边界不自然、通用误判风险）；FaceDetailer（用户早期淘汰）。
