@@ -21,6 +21,8 @@
 | **Set Image Alpha / Set Masked Alpha** | 图层透明度控制 | 整图或仅遮罩区域设定 Alpha |
 | **Before/After Preview** | 剪映对比视图 | 原图与调色结果并排实时对比 |
 | **Image Compare A/B** | 修图软件对比模式 | SLIDE 滑动逐帧揭示 A/B，A/B 一键切换，面板内嵌预览 |
+| **Tiled Upscale / Tiled Upscale Stitch** | 分块放大（Qwen 编辑链） | 复刻 AusBoss 切块/拼回逻辑；Stitch 端新增 FFT 相位相关亚像素几何配准，消除 QwenImage 2.1 + 自训 LoRA 重绘导致的接缝偏移 / 重影；32 倍数对齐，纯 torch 零额外依赖 |
+| **Color Calibrator** | 双图颜色校准 | 复刻 BlueBox `ColorCalibratorBlueBox`：自动对比两图检测变化区 → 遮罩外逐通道仿射校色 → 锚点对比度回压 → 遮罩外低频回贴（高频保留）或原图回贴；输出 image / mask / changed_ratio |
 | **Set / Get Image Variable** | 跨节点传递图片 | 全局图像变量：Set 写入（image 透传）、Get 按 key 读取，大型工作流免拉长线 |
 | **Label** | 工作流注释 / 分区说明 | 浮动文字标签：双击就地改文案（回车或点外部生效），字号 / 字体 / 字色 / 对齐 / 背景（含 8 位 HEX 半透明）/ 内边距 / 圆角 / 角度全可调，支持 `\n` 换行 |
 
@@ -59,7 +61,7 @@ ComfyUI/custom_nodes/ComfyUI-ItsGemTools/
 
 **然后重启 ComfyUI**（前端扩展需重启加载；若改过扩展文件建议浏览器 Ctrl+Shift+R 硬刷新）。
 
-在节点搜索框搜索：`Adjust Color & Effect`、`Skin Beauty`、`Layer Composite`、`maskfeather`、`Before/After Preview`、`Image Compare A/B`、`Label`。
+在节点搜索框搜索：`Adjust Color & Effect`、`Skin Beauty`、`Layer Composite`、`maskfeather`、`Before/After Preview`、`Image Compare A/B`、`Label`、`Color Calibrator`。
 
 ## 快速上手
 
@@ -157,6 +159,37 @@ Set Image Variable（key=my_image，image=任意 IMAGE）→ 串在流程中
 - **固定**：右键 → Pin 把标签钉在画布上并让点击穿透，再次右键取消
 - **命名**：`Label (ItsGemTools)` 带品牌后缀，与 rgthree 等第三方 `Label (…)` 互不冲突、不会被合并覆盖；搜索框输入 `label` 即可前缀命中
 
+### Tiled Upscale / Tiled Upscale Stitch（节点键 `GemTiledUpscale` / `GemTiledUpscaleStitch`）
+复刻自 ComfyUI-AusBoss 的 `Tiled Upscale 🆎` / `Tiled Upscale Stitch 🆎`（切块 / 拼回逻辑与原版一致），并在 **Stitch 端新增 tile 级亚像素几何配准**，专治 QwenImage 2.1 + 自训 LoRA 重绘导致的接缝偏移 / 重影：
+- **用法**：`Tiled Upscale (ItsGemTools)` 切 tile（megapixels / tile_megapixels / overlap / multiple / max_growth / enforce_qwen_tile_limit，32 倍数对齐）→ 采样器逐 tile 重绘 → `Tiled Upscale Stitch (ItsGemTools)` 拼回。与原 AusBoss 节点**成对替换**（stitcher 互相不兼容）。
+- **对齐机制**：每个重绘 tile 与**已拼入的邻接 tile 卡通输出**做 **FFT 相位相关**（纯 torch，无 cv2 依赖），估计亚像素平移并归位后再混合（左/上邻居各测一次取峰更高者，诊断输出 `shift=(…) via left|up`）；**全分辨率估计**（长边超 2048 才降采样），避免小缩略图把大 tile 的几像素位移抹成亚像素噪声——这是大图偏移"修了又犯"的隐藏来源。
+  - **为什么不拿源照片当配准参考**：Qwen 卡通化后与照片特征域差异太大，相位相关峰只有 0.02~0.03（阈值 0.10），全部 `skipped`、接缝零修正——正是重影 / 偏移的根源。参考改为卡通输出后同域对齐，峰显著提升、能真正测出相邻相对错位。
+  - **配准参考用原始内容而非拼接快照**：窄带混合会让先写邻居在共享区 mask 让出（权重≈0），快照共享区内容≈0 会再次导致配准失败；配准参考单独维护"未乘 mask 的原始重绘累加"，共享区始终保留邻居完整内容。
+- **可靠度保护**：低纹理（纯色 / 均匀区）或位移超过 `max_align_shift` 时自动跳过配准，退化为原版行为，绝不错误配准；边界 8px 羽化过渡防图像最外缘撕裂。
+- **全带对称渐变（`blend_band=0`，默认；抑制幽灵下巴）**：幻觉是单个 tile 在共享区随机生成、相邻 tile 不会在同一位置生成同样内容。全带渐变（与 AusBoss `_ramp` 一致）让共享区两 tile 权重 0↔1 横跨整个 overlap、和恒=1，**后写 tile 权重从 0 渐升，单 tile 幻觉被相邻正常内容平均稀释**（合成场景幻觉可见度 0.70→0.48；真实 AusBoss 成图幽灵区幻觉像素=0）。配准先对齐几何，全带平均的内容一致、无错位重影；配准即使 `skipped` 也退化为 AusBoss 实测干净的行为。全带路径不做 tone match，早期"共享区 gain<1 压暗亮毛衣"的问题从根源不存在。
+- **窄带独占混合（`blend_band>0`，可选）**：相邻 tile 互相看不到对方输出、Qwen 各画一遍接缝区内容，若全带平均在个别场景出现宽重影带，可让 **overlap 主体由后写 tile 独占**（单侧内容，无双影），只在紧贴边界的 `blend_band` 像素内 0↔1 渐变，重影带从 overlap 宽缩到 2×band。**代价是后写 tile 在共享区的随机幻觉会被完整保留（幽灵下巴）**，故仅在全带确实重影且无幻觉时使用。
+- **窄带 mask 缝隙修复（"黑色分隔线"真正根因）**：用户多轮实测黑线（over256 版 x=932 单列纯黑、横缝 y=1160/2320 暗行）在 edge fix 后仍未消除，最终定位根因在 `_gem_ramp_edge` 权重本身：旧 fall（先写 tile 让出区）的 body 0 区紧贴共享边界，而 rise（后写 tile）渐变从 0 开始——**边界处两个 tile 的 mask 都=0，`weight=0` → `total/weight.clamp_min(1e-6)=0` 黑缝**，resample 后成单列黑线。修复后 fall 渐变带紧贴共享边界（1→0），body 0 区移到内侧，与邻居 rise（0→1）精确对接，**overlap 区权重和恒=1，无 weight=0 位置**。
+- **Qwen tile 边缘黑边填充（辅助防线）**：若 Qwen 重绘 tile 本身带边缘暗边伪影（实测 1~2px 整列黑边），拼接时逐边检测 tile 边缘 band（默认 8px）内**最暗列/行**均值是否比内侧带暗超 `_GEM_TILE_EDGE_DARK`（0.098，0-1 像素域），是则用内侧内容复制填充该边。**用"边缘带整体均值"检测会因黑边过窄被稀释而漏检**（1px 黑边在 8px 带中只拉低 ~0.07 < 阈值），必须按最暗列/行判定。
+- **块间色调拉齐（"格子感"叠加因素，空间衰减）**：Qwen 各 tile 独立重绘的亮度/色调本身不齐（实测 tile 间中心亮度差可达 118.6~236.2）。拼接时对左/上已拼邻居共享区逐通道最小二乘 gain+bias，**通过空间衰减场只在接缝 band 附近对齐（接缝处=1、向 tile 内部衰减到 0，reach=max(band×2,96)）**，块间亮度/色调一致又不波及 tile 内部。不做整 tile 硬套：旧实现把暗共享区拟合的 gain<1 应用到整个 tile，会把下部亮白毛衣错误压暗（实测行2 均值 -28.4、越往下越暗）。窄带混合（`blend_band>0`）时执行；`blend_band=0` 旧全带兼容路径不做，保持旧行为。
+- **Qwen 上限防呆（`enforce_qwen_tile_limit`，默认开）**：Qwen-Image 2.1 官方硬上限 2048×2048（4.19MP）。安全工作点对齐 AusBoss 切块口径（`tile_mp×1.125×1.03`，tile4≈4.6MP），本开关会在单 tile 超过安全线 **4.6MP** 时自动调低 `tile_megapixels` 重规划，并在 `report` 输出里写明"已自动降为 x（单块 y MP）"；自然 1×2 宽 tile（≤4.6MP）保留、无垂直缝切脸，小图不误钳，`tile_megapixels=8` 翻倍单块仍会被钳，关闭则完全按填的参数切。
+- **Qwen 防呆同时收紧 tile 宽高比（上限 2.2 → 1.6）**：输入被缩成细长竖图时，网格可能选出 2.2:1 的超扁横条 tile，Qwen 在扁条上重绘构图保持差、内容变形，且扁条低频内容把配准峰压低导致全部 `skipped`（表现为"变形"）。开启防呆时强制 tile 接近方形（如 576×1024 → 8MP 从 5×1 扁条 2112×960 变为 2×3 网格 1184×1440），方图/横图/小图不受影响；关闭开关仍按通用 2.2 切。
+- **成图严格等比（零比例误差）**：成图尺寸与 `before` 对照输出**像素级严格等比**于源图（`result_multiple=1` 默认），不再被 32 对齐取整带偏——如 576×1024 → 8MP 成图 2121×3771（误差 0.009%）。`redraw`/`tiles` 仍 32 对齐、tile 布局不变，Stitch 端负责把拼好的重绘层精确重采样到严格等比成图尺寸。
+- **redraw 工作层取整对齐 AusBoss（`_gem_redraw_size`）**：工作层宽高各自独立就近 half-up 到 32（复刻 AusBoss `megapixel_size`），而非比例误差优先枚举，保证 tile 网格/boxes 与 AusBoss 完全一致（如 1088×1920→8MP 得 redraw 2144×3744、tile2 起点 1728、共享区 288），让斜向手臂/手套等结构在 tile 内有足够上下文，消除下半身斜向羽化模糊。该口径只影响内部工作层，最终仍 resample 到严格等比 result，成图零比例误差不变。
+- **参数**：`align_mode`（translation 默认 / off 还原版行为）、`max_align_shift`（默认 64px，zoom / 重构图漂移大的工作流可调大）、`blend_band`（0=全带渐变默认、抑制幻觉；>0=窄带独占可选，带宽 32~96）、`keep_colors`（原版颜色保持，默认 1）。
+- **兼容性**：只依赖 `torch` / `numpy` / `Pillow`（ComfyUI 自带），无新增依赖。
+
+### Color Calibrator（节点键 `GemColorCalibrator`，显示名 Color Calibrator (ItsGemTools)）
+复刻 BlueBox `ColorCalibratorBlueBox`（zhoutingxi/ComfyUI-BlueBox，MIT）——**算法思路按原版实现，代码在本包内重写；原版节点零改动，两节点键名/显示名互不冲突、可同画布共存**。典型场景：`image_original` = 原图、`image_edited` = AI 改图（换脸 / 重绘 / 调色），把改图区域的颜色"校准回"原图观感，同时保留编辑内容：
+- **自动遮罩**（不接 `mask` 时）：逐像素比较两图，`threshold` 判定变化区 → 开运算（`open_k`，去孤立噪点）→ 闭运算（`close_k`，填内部小洞）→ 膨胀（`expand`，外扩包含边缘过渡）。`mask` 已接时跳过自动检测，直接用给定遮罩。
+- **校色**：用遮罩外（可靠区，严格排除变化区）逐通道加权统计估计 **scale + shift 仿射**（scale 钳制 0.5~2.0），`strength` 控制校正强度（0 = 完全不改，1 = 全量校正）。
+- **对比度回压**：遮罩外前后对比估计对比度拉伸倍数 `a`（钳制 0.3~3.0），围绕编辑图自身黑场把整图跨度缩回 `/a`——找回原图对比度又不钉死到原图绝对范围。
+- **`outside_mode`**：
+  - `edited`（默认）：高斯金字塔 3 层低频融合——遮罩外低频回贴原图、高频保留编辑图（改图纹理不丢，只换底色 / 环境光）。
+  - `original`：遮罩外严格回贴原图（无过渡细节）。
+- **输出**：`image` 校正图（RGBA 跟随输入）、`mask` 检测/使用的遮罩、`changed_ratio` 变化区占比。节点自带 512px 上限的结果 + 遮罩双预览。
+- **依赖**：torch / numpy / PIL；`expand` 超过 32px 时优先用 scipy 半分辨率 EDT 加速，**scipy 缺失自动退化为 GPU max_pool**（结果一致，仅大半径略慢），不影响使用。
+- **命名**：`Color Calibrator (ItsGemTools)` 带品牌后缀，与 BlueBox 的 `Color Calibrator (BlueBox)` 互不冲突、不会被合并覆盖；搜索框输入 `color calibrator` 即可前缀命中。
+
 ## 中英双语
 
 - 节点标题与 Image Compare 面板按钮跟随 ComfyUI 界面语言自动切换（Settings → Language 选简体中文即显示中文）。
@@ -175,6 +208,7 @@ Set Image Variable（key=my_image，image=任意 IMAGE）→ 串在流程中
 | Layer Composite | torch | 混合模式逐通道实现，ComfyUI 自带 |
 | maskfeather（羽化） | torch / **scipy（可选）** | 使用 `scipy.ndimage.distance_transform_edt` 计算有符号欧氏距离；**未装 scipy 时该节点报错并提示，其他节点不受影响** |
 | Set Image Alpha / Set Masked Alpha | torch | ComfyUI 自带 |
+| Color Calibrator | torch / numpy / **scipy（可选）** | `expand` > 32px 时用 scipy 半分辨率 EDT 加速膨胀；**未装 scipy 时自动退化为 GPU max_pool，结果一致、仅大半径略慢** |
 | Before/After Preview | torch | ComfyUI 自带 |
 | Image Compare A/B | 前端内联 | 面板预览纯浏览器 JS，零依赖 |
 | Label | 前端内联 | 前端画布自绘、双击编辑；后端仅注册空实现类，不参与执行 |

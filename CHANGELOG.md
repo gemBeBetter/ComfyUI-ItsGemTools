@@ -6,6 +6,59 @@
 
 ### 新增
 
+- **redraw 工作层取整对齐 AusBoss，消除 case2 下半身斜向模糊/重影**——case2（源图 1088×1920→8MP，tile4/ov256）成图（2129×3759）腰以下裙子/手/麦克风出现沿手臂/手套斜向轮廓的半透明羽化模糊。
+  - **排查路径**：工作流确认该 case 用窄带 blend_band=48；A/B 实测全带（0）与窄带（48）右侧模糊都在、配准两次都 `skipped(peak=0.01)`，排除 band 混合与配准；所有几何操作（ramp/keep_colors/edge fix/resample）均为轴对齐或全局，无法产生斜向边界，判定模糊来自模型 tile2 重绘输出本身，且对 tile 几何边界敏感。
+  - **决定性对照**：用 AusBoss 节点、同图同 seed 同参数（8MP/tile4/ov256）跑，AusBoss 干净。逐行对比定位到 redraw 尺寸口径差异：旧 `_gem_megapixel_size` 用"比例误差优先枚举"，该 case 选 2144×**3776**（tile2 起点 1760、共享区 256）；AusBoss 用宽高各自独立 half-up，得 2144×**3744**（tile2 起点 1728、共享区 288），手臂斜向结构在 tile2 里有更多上方上下文，避开重绘失败。
+  - **修复（只改 ItsGemTools，AusBoss 零改动）**：新增 `_gem_redraw_size`（独立 half-up，复刻 AusBoss `megapixel_size`），plan 的 redraw 工作层改用它；**result 严格等比层（result_multiple=1）不动**，成图仍零比例误差（case2 实测 0.0016%），redraw 只是内部工作层、最后 resample 到 result。离线确认 case2/图1 的 redraw 与 boxes 均与 AusBoss 完全一致。
+  - **验证**：py_compile 通过；核心回归 42/42；verify_fullband_align_shift / mask_gap / ghost_fix / edge_fix_unit 全 exit=0。**用户实测待进行**。
+——用户在 `qwen21_v3_人脸_发丝` 工作流（8MP/tile4/ov256）跑出正常眼睛上方半透明半睁的第二双眼（带矩形羽化暗块），决定性证据是**全带（blend_band=0）、进 Calibrator 之前的纯 Stitch 输出就有鬼影**，排除 Calibrator 与全/窄带差异，确认是单 tile 模型幻觉：
+  - **几何根因**：该场景自然布局是 1×2 宽 tile（2464×1792=4.415MP，无垂直缝），但旧的 3MP 安全线把它钳制降成 2×2 窄 tile（1376×1792），**垂直缝（x≈1081）切到右眼**；窄 tile 只看得到半张脸、缺全局上下文，按"人像"语义脑补出第二双眼，且该位置在 tile 内部非共享区（全带 ramp 权重=1.000），拼接无法稀释。
+  - **对齐 AusBoss**：AusBoss 的 tile 上限 = `tile_mp × TILE_SLACK(1.125) × SNAP_SLACK(1.03)`（tile4=4.635MP），不做额外面积钳制，自然宽 tile 保留、无垂直缝。把 `_GEM_SAFE_TILE_PX` 改为 4_600_000：自然宽 tile 4.415MP 通过、无垂直缝；`tile_megapixels=8` 翻倍单块（8.096MP）仍 >4.6 被钳。可能的小幅漂移由 Stitch 端 tile-to-tile 配准（AusBoss 没有的安全网）纠正。
+  - **否决的弯路**：宽 tile 面积豁免（近方形宽 tile 实测系统性横向漂移 +1.6~2.9px，会让偏移回归，已回退）；overlap 256→384 让眼睛进入共享区、明显鬼影消失但仍有残留（幻觉结构在非共享区部分）；成图后局部 inpaint（矩形暗块边界不自然、通用误判风险）；FaceDetailer（用户早期淘汰）。
+  - **验证**：py_compile 通过；split 离线输出 1×2、tile(2464,1792)、垂直缝=False；核心回归 42/42（2c 防呆断言按 4.6MP 口径更新、新增 tile8 翻倍仍被钳；第5节整链改用自然 1×2 多 tile 验证配准，off 误差 0.0328→translation 0.0001）；verify_fullband_align_shift / mask_gap / edge_fix / tone_spatial / ghost_fix 全通过。**用户实测待进行**。
+- **Color Calibrator（节点键 `GemColorCalibrator`，显示名 `Color Calibrator (ItsGemTools)`）**：复刻 BlueBox `ColorCalibratorBlueBox`（zhoutingxi/ComfyUI-BlueBox，MIT）的双图颜色校准节点——
+  - **算法对齐原版**：自动对比两图检测变化区（`threshold` 阈值 + `open_k`/`close_k` 开闭运算 + `expand` 膨胀）→ 遮罩外逐通道加权统计仿射校色（scale 钳 0.5~2.0、`strength` 控强度）→ 遮罩外锚点测对比度拉伸倍数（钳 0.3~3.0）围绕编辑图自身黑场回压全图 → `outside_mode=edited` 高斯金字塔 3 层低频融合（遮罩外低频回贴原图、高频保留编辑图）或 `original` 严格回贴；输出 `image` / `mask` / `changed_ratio`。
+  - **独立命名不撞名**：显示名带 `(ItsGemTools)` 品牌后缀（搜索框 `color calibrator` 前缀命中），与 BlueBox 原节点键/名互不覆盖，可同画布共存、原版零改动。
+  - **依赖策略同包**：仅 torch / numpy / PIL；`expand`>32px 的 EDT 加速优先 scipy，缺失自动退化为 GPU max_pool（结果一致仅略慢），不新增硬依赖。
+  - **前端登记**：淡紫主题皮肤 NODE_TYPES 与 i18n 双语标题已加入。
+  - **验证**：实例 venv 导入 + 合成双图端到端验证（自动遮罩、校色、对比度回压、两种 outside_mode、mask 直通、RGBA 透传）全通过。
+- **幽灵下巴结构性根因确认：窄带独占混合保留单 tile 幻觉，默认混合改回全带对称渐变（`blend_band` 默认 48→0）**——在确认 LoRA/seed 均非根因（关 LoRA 幻觉反而最重 27996 像素、同 LoRA 不同 seed 差异巨大）后，逐行对照 AusBoss 源码定位到**混合机制这一结构性差异**：
+  - **机制（`verify_narrow_hall_mechanism`）**：幻觉是单个 tile 在共享区随机生成、相邻 tile 不会在同一位置生成同样内容。**全带对称渐变（AusBoss `_ramp`，共享区两 tile 权重 0↔1 横跨整个 overlap、和恒=1）下，后写 tile 在共享区权重从 0 渐升，幻觉被相邻正常 tile 内容以高权重平均稀释**；而**窄带独占（`_gem_ramp_edge`）让后写 tile 在共享区主体 mask=1 独占，幻觉被完整保留**。合成 1D 场景（真值 0.70、相邻 0.20）：全带幻觉可见度 **0.481**、窄带 **0.699**，全带权重在 y40 仅 0.16；真实 AusBoss 成图 `qwen_00002`（1056×1888）幽灵区幻觉像素 **=0**。
+  - **重影与幻觉是同一机制两面**：全带平均错位内容→重影但抑制单 tile 幻觉；窄带独占→无重影但保留幻觉。**修复 = 全带渐变 + 保留配准**：配准先把 tile 几何对齐（对齐后全带平均的内容一致、无错位重影），全带再平均稀释幻觉。配准即使 `skipped`，全带也退化为 AusBoss 实测干净的行为。
+  - **明暗问题一并消解**：全带路径（`band=0`）不做 tone match，早期"用共享区 gain<1 硬套整 tile 压暗亮毛衣"的有害校正从根源不存在；全带平均天然平滑接缝色调（AusBoss 无 tone match 亦无明暗问题）。
+  - **落地**：`blend_band` 默认 0（全带，推荐）；`>0` 窄带独占保留为可选（仅当全带确实出现重影且无幻觉时）。核心 42/42 + 全部 verify（含新增 `verify_narrow_hall_mechanism`、`verify_fullband_align_shift`）通过。
+  - **偏移不回归（`verify_fullband_align_shift`）**：偏移修复分两层——几何防线（3MP/AR1.6/严格等比/切块）独立于 blend，配准在混合前、独立于 band 执行。相同平移漂移下主体条带误差：不配准 **0.0949**、全带+配准 **0.0058**、窄带+配准 **0.0056**（全带 5 块配准成功），全带与窄带校正力相当、均比 baseline 好约 16 倍。全带不引入位置偏移，仅在未对齐时可能产生重影（由配准消除）。
+
+- **GemTiledUpscaleStitch "黑色分隔线/格子"根除：窄带 mask 缝隙修复（主因）+ Qwen tile 边缘黑边填充 + 块间色调拉齐**——用户多轮实测黑线（over256 版 x=932 单列纯黑亮度 0.3/255、横缝 y=1160/2320 暗行）在两轮修复后仍未消除，最终定位**真正根因是窄带 mask 权重缝隙，不是 tile 内容黑边**：
+  - **mask 缝隙根因与修复（`_gem_ramp_edge`）**：旧 `_gem_ramp_edge` 的 fall（先写 tile 让出区）把 body 0 区紧贴共享边界（`weights[length-fall:length-band]=0`），而 rise（后写 tile）渐变从 0 开始（`weights[0]=0`）——**边界处两个 tile 的 mask 都=0，`weight=0` → `total/weight.clamp_min(1e-6)=0` 黑缝**，resample 后成单列黑线（横缝同理）。修复后 fall 渐变带紧贴共享边界（边界处权重=1，band 内 1→0），body 0 区移到渐变带内侧；与邻居 rise（0→1）精确对接，**overlap 区权重和恒=1，无 weight=0 位置**。这解释了前两版 edge fix 为何无效：mask=0 时 tile 内容根本不贡献。
+  - **边缘黑边填充（`_gem_fix_tile_edge_band`，辅助防线）**：逐边检测 tile 边缘 band（默认 8px）内**最暗列/行**均值比内侧 band 低超阈值（`_GEM_TILE_EDGE_DARK=0.098`，0-1 像素域）时，用内侧内容复制填充该边，消除 Qwen tile 本身可能带的边缘暗边伪影。检测用"最暗列/行"而非"band 整体均值"：1~2px 窄黑边在 8px 带均值中会被稀释（只低 ~0.07 < 阈值），按最暗列/行才能抓到。已在 `_gem_join` 中 keep_colors 之后执行。
+  - **块间色调拉齐（`_gem_tone_match` / `_gem_fit_gain_bias`，空间衰减）**：对左/上已拼邻居的共享区分别逐通道最小二乘 gain+bias（`_GEM_TONE_GAIN_MIN/_MAX=0.7/1.3`、`_GEM_TONE_BIAS_MAX=0.18`），按共享区像素数加权平均，消除 Qwen 各 tile 独立重绘造成的块间亮度/色调不一致（"格子感"叠加因素）。**校正通过空间衰减场只在接缝 band 附近生效（接缝处=1、向 tile 内部 linspace 衰减到 0，reach=max(band×2,96)），不做整 tile 硬套**——早期版本把单一 gain/bias 应用到整个 tile，实测行2 tile 用顶部暗背景共享区拟合出 gain<1，把下部亮白毛衣错误压暗（源毛衣 112→209 渐变，成图只到 165，差异与源亮度成正比、越往下越暗，均值 -28.4）。窄带混合（`blend_band>0`）时执行；`blend_band=0` 旧全带渐变兼容路径不做 tone match，保持旧行为。
+  - **实测**：`verify_mask_gap` 水平/垂直 overlap 权重和恒=1（边界 [928..980] 全 1.000）；黑边修复 0 → 0.502（内侧 0.506）；接缝 band 色调差 0.100 → 0.025 且 tile 内部主体改动量=0（亮毛衣不再被压暗）；端到端横缝上下差 0.01；42/42 核心回归 + `verify_tone_spatial`（接缝对齐、内部亮主体 0.700 保持、衰减单调）+ `verify_ghost_fix`（窄带单侧相关 0.705 vs A -0.002，band=0 双影对照保持）+ `verify_placed_raw`（5/6 配准、条带 0.0037）+ `verify_edge_tone` + `verify_edge_fix_unit` 全部通过。
+
+- **GemTiledUpscaleStitch 重影根治：tile-to-tile 卡通域配准 + 窄带独占混合（`blend_band` 新参数）**——消除 Qwen 相邻 tile 内容不一致导致的宽重影带：
+  - **配准参考域修正**：旧配准拿源照片当参考，Qwen 卡通化后特征域差异太大（实测 peak 仅 0.02~0.03，阈值 0.10），全部 `skipped`、接缝零修正。现改为**已拼入的邻接 tile 卡通输出**做参考（`_gem_align_vs_placed`），左/上邻居各测一次取峰更高者，诊断输出 `shift=(…) via left|up`。
+  - **参考污染修复**：窄带混合会让先写邻居在共享区 mask 让出（权重≈0），若直接拿拼接快照当配准参考，共享区内容≈0、配准必失败（实测 peak 0.01~0.02）。现配准参考改用**未乘 mask 的原始重绘内容累加 + 覆盖计数**，共享区保留邻居完整内容。
+  - **窄带独占混合（`_gem_ramp_edge`）**：overlap 区主体由后写 tile 独占（单侧内容，无双影），仅在紧贴 tile 边界的 `blend_band`（默认 48）像素内 0↔1 渐变衔接；重影带宽度从 overlap 宽缩到 2×band。`blend_band=0` 还原旧的全带对称渐变行为。
+  - **实测**：模拟相邻 tile 相对错位 2~3px 时 5/6 块配准成功、位移全部测准，接缝条带误差 0.1073 → 0.0052（20 倍改善）；42/42 回归通过。
+
+- **Tiled Upscale / Tiled Upscale Stitch（节点键 `GemTiledUpscale` / `GemTiledUpscaleStitch`）**：复刻 ComfyUI-AusBoss 的切块 / 拼回两节点，Stitch 端新增 **tile 级亚像素几何配准**（FFT 相位相关，纯 torch 零新依赖）——
+  - **根治接缝偏移**：QwenImage 2.1 编辑模型 + 自训 LoRA 重绘单 tile 时构图会相对源 tile 漂移数像素，原版只做颜色匹配、直接按 box 放回，接缝处即错位 / 重影。本节点先估计每个重绘 tile 相对源 tile 的平移、归位后再混合，实测对 2px 漂移的拼接误差降低 ~76%。
+  - **大图配准可靠**：全分辨率相位相关（长边超 2048 才降采样），避免早期"512 缩略图"方案把大 tile 的真实位移抹成亚像素噪声导致估计失效——这是偏移"修了又犯"的隐藏来源。
+  - **安全保护**：低纹理 / 位移超 `max_align_shift` 自动跳过配准（退化原版行为）；边界 8px 羽化过渡防图像最外缘撕裂；`align_mode=off` 可还原版行为。
+  - **兼容**：与原 AusBoss 节点成对替换（stitcher 互不兼容，异源直接报错提示）；参数接口与原版一致（megapixels / tile_megapixels / overlap / multiple / max_growth / keep_colors）。
+
+- **GemTiledUpscale Qwen 上限防呆（`enforce_qwen_tile_limit`，默认开）**：单 tile 面积超过安全工作点时自动调低 `tile_megapixels` 重规划，并在 `report` 输出明确提示。安全工作点初版为 3MP，后对齐 AusBoss 口径调整为 4.6MP（见顶部条目）。
+  - **背景**：Qwen-Image 2.1 官方硬上限 2048×2048（4.19MP），但实测单块贴着上限（如 2144×1952≈4.185MP）时重绘构图仍系统性横向漂移（+1.6~+2.9px），且配准无法完全挽回——这是"调大 tile_megapixels 又复发"的兜底防线。
+  - **行为**：如 1088×1920 → 8MP、tile_megapixels=4 时，自动降为 3.28（单块 2144×1344=2.88MP、3 块），成图尺寸不变；小图上参数虽大但实际单块不超限时不误钳；关闭开关则完全按填的参数切。
+
+- **GemTiledUpscale Qwen 防呆模式收紧 tile 宽高比（`_GEM_QWEN_MAX_TILE_ASPECT=1.6`）**：开启 `enforce_qwen_tile_limit` 时，单 tile 宽高比上限从通用 2.2 收紧到 1.6，逼网格选择接近方形的 tile。
+  - **背景**：输入经 1024 控制缩成细长竖图（如 576×1024）后，`max_growth` 较大时 redraw=result，网格枚举第一个可行解是单列超扁横条（实测 5×1，tile 2112×960≈2.2:1）。Qwen 在 2.2:1 横条上重绘构图保持差、内容变形（五官/手型），且扁条低频内容使 FFT 配准峰压低全部 `skipped`（peak 0.05~0.09），接缝无修正 → 表现为"变形"。
+  - **行为**：同参数下 576×1024 → 8MP 从 5×1 扁条变为 2×3 网格（tile 1184×1440，AR 1.22，6 块），落回 Qwen 舒适区；方图/横图/小图/防呆钳场景（2144×1344 AR 1.60）均不受影响；关闭开关仍按通用 2.2 切（还原老行为）。
+
+- **GemTiledUpscale 成图严格等比（`result_multiple=1` 默认）**：成图尺寸（`result` / `before` 输出 / Stitch 最终输出）改为**像素级严格等比**于源图，不再被 32 对齐取整带偏比例。
+  - **背景**：用户以 `before` 输出（源图放大到成图尺寸的对照图）为检查点，发现 576×1024 → 8MP 旧成图 2112×3744 比例 0.5641 vs 源 0.5625，存在 +0.28% 的 32 对齐取整误差——Qwen 参考的就是这个比例，是"上游偏、后面重绘跟着偏"的最后一项来源。
+  - **行为**：`redraw` / `tiles` 仍按 `multiple`（默认 32）对齐（tile 布局、切块完全不变），Stitch 端利用已有的"重绘尺寸 → 成图尺寸"补差机制，把拼好的 32 对齐层 lanczos 重采样到严格等比的成图尺寸。576×1024 → 8MP 新成图 **2121×3771**（比例误差 0.009%，亚像素级）；1088×1920 → **2129×3757**。keep_size（megapixels=0）保持原尺寸不受影响。
+
 - **Label（节点键 `Label (ItsGemTools)`）**：浮动文字标签节点，复刻 rgthree Label 的全部视觉功能——
   - 文案 = 节点标题，支持 `\n` 字面序列换行；可调字号、字体、字色、对齐（左 / 中 / 右）、背景色、内边距、圆角、角度（度）。
   - 颜色支持 8 位 HEX 半透明（如 `#FFFFFF88` = 半透明白，背景与文字均支持）。
@@ -14,6 +67,35 @@
   - **命名 SEO**：`Label (ItsGemTools)` 带品牌后缀唯一不撞名（不同于 rgthree 的 `Label (rgthree)`），搜索框搜 "label" 时前缀命中且字母序靠前。
 
 ### 修复
+
+- **Tiled Upscale Stitch 峰高阈值再次卡狠真实信号（实测 peak=0.13,ratio=258 仍被拒）**
+  - 真实重绘 tile（2144×1952，Qwen 卡通化）实测：归一化峰高 **0.12~0.13**、峰比 **234~258**（信号极强，峰高只是被大 tile 内容一致区摊低），0.15 阈值差 0.02 全拒。**阈值校准到 0.10**（噪声伪峰 0.02 仍有 5 倍裕度，真实重绘 0.12~0.13 放行）。同时 diagnostics 的 `skipped` 现在带实测 `peak/ratio`，阈值校准不再靠猜。
+  - 峰比门槛 4.0 → 2.5：峰高阈值已把关噪声，峰比可放宽。
+
+- **Tiled Upscale Stitch 归一化峰高阈值过严，真实配准全部被拒（表现为"有偏移还是"）**
+  - **根因**：上一版把 `_GEM_ALIGN_MIN_PEAK` 定在 0.3。实测三档数据：不相关噪声伪峰 ≈ **0.020**；真实整 tile 平移峰 ≈ **0.999**；但**全分辨率大图（2144×3776）真实微位移峰只有 ≈ 0.27**——大图上大部分区域内容一致、相位相关峰被摊低是天然现象。0.3 阈值把真实大图配准全判成 `skipped`，重绘漂移原样保留，用户实拍输出相对基准水平偏移 **2.2px** 全部漏配。
+  - **修复**：阈值降至 **0.15**，在噪声（0.02）与真实大图信号（0.27）之间留足裕度；37 项回归全绿（噪声仍被拒、已知平移 0.999 仍通过）。用真实输出图对复测：全图配准成功估计 (2.19, -0.26)px。
+
+- **Tiled Upscale 目标尺寸 32 对齐导致纵横比漂移（Qwen 参考图变形 → 重绘跟着偏移）**
+  - **根因**：`_gem_megapixel_size` 宽高各自就近取整到 32 倍数，两次取整带偏比例。实测 1088×1920 → 8MP 得到 2144×3744，比例漂移 **+1.06%**——Qwen 看到的是被横向拉宽的参考图，重绘内容跟着变形，纯平移配准救不回来，表现为"怎么修都还有偏移"。
+  - **修复**：改为比例优先的枚举取整（宽高各取上下 32 对齐共 4 组合，按比例误差最小 + 面积不低于目标选择）。修复后 1088×1920 → 8MP 得 2144×3776，比例误差 0.20%；新增 2b 回归（4 组尺寸场景，比例误差 < 0.5% 断言）。
+- **Tiled Upscale Stitch 低纹理误配准（噪声伪峰被当成有效位移）**
+  - **根因**：可靠度只判峰/RMS 对比度；两张独立低幅噪声图相位相关峰比可达 8（阈值 4.0 拦不住），把噪声当位移 → tile 被错误平移 → 更严重的偏移。
+  - **修复**：加归一化峰高下限 `_GEM_ALIGN_MIN_PEAK=0.3`（有效平移峰接近 1.0，不相关噪声伪峰仅 0.1~0.3）。同时固定测试 4 项的随机种子，消除断言漂移。
+- **Tiled Upscale Stitch 多 tile 时接缝出现重影**
+  - **根因**：`_gem_blend_shifted` 为防单 tile 平移露出边缘伪影，在 tile 最外圈 edge px 内把"配准版"与"未配准版"混合；多 tile 时 tile 边缘正是接缝区，混合带里两版内容几何错位 dx px，直接把偏移原样混回接缝——表现为明显重影。而接缝区 overlap 权重本就趋 0，平移的 border 复制会被邻居权重压掉，该保护纯属多余。
+  - **修复**：删除边缘混合，配准后直接用纯归位版（`_gem_apply_shift(tile, -dx, -dy)`）；单 tile 场景的最外缘伪影由 border 填充兜底，视觉影响远小于重影。
+  - **配套**：Stitch 新增 **diagnostics STRING 输出**——逐 tile 报告估计位移 / 跳过原因（如 `tile@(x,y) WxH: shift=(+1.6,-0.8)`），排查偏移可直接读该输出判断配准是否生效。回归测试 33 项全部通过（含新诊断断言）。
+
+- **Tiled Upscale Stitch 配准门槛过严导致强风格化 / 大位移重绘不配准（表现为"偏移太大"）**
+  - **根因**：峰值/RMS 可靠度门槛 `_GEM_ALIGN_PEAK_RATIO=8.0` 在重绘风格化较强（对比度 / 色相变化、细节重绘）时把相关峰压钝，多数 tile 被判"低纹理"直接跳过配准；`max_align_shift=24` 对 zoom / 构图漂移大的工作流（如本包适配的 Qwen zoom 卡通化）也偏小，真实位移超限同样被跳过——两者都导致输出退化为原版"按 box 直接放回"的偏移行为。
+  - **修复**：门槛放宽至 4.0（低纹理保护仍有效，纯噪声图虚警率不升）；`max_align_shift` 默认 24 → 64，示例工作流同步更新为 64。
+  - **配套**：回归测试在门槛 4.0 下仍 32 项全绿（含低纹理保护 / 位移超限拒绝 / list 包参）。
+
+- **Tiled Upscale Stitch 在真实 ComfyUI 报 `TypeError: int() argument must be ... not 'list'`**
+  - **根因**：`GemTiledUpscaleStitch` 声明了 `INPUT_IS_LIST=True`，ComfyUI 执行时会把**所有**输入（包括 widget 标量 `keep_colors` / `align_mode` / `max_align_shift`）包成 list 传入；`stitch()` 里 `int(max_align_shift)` 对 list 调用直接抛 TypeError，且 `str(align_mode)=="translation"` 恒为 False（配准静默失效）。独立单元验证时传的是标量，未模拟 ComfyUI 的 list 包参方式，故 31 项全过却在真实运行环境暴露。
+  - **修复**：`stitch()` 开头统一解包标量输入（keep_colors / align_mode / max_align_shift），再进入原有逻辑；配准与颜色保持均按预期生效。
+  - **配套**：回归测试新增「5b. INPUT_IS_LIST 全 list 包参」项（用 ComfyUI 真实传参方式跑整链，验证不抛错且配准误差改善保留），现 32 项全部通过。
 
 - **Label 双击编辑框定位（适配前端 1.55）**
   - **根因**：前端 1.55 重写了坐标系统——画布元素上 `ds` / `convertCanvasToOffset` / `convertOffsetToCanvas` 等坐标 API 全部移除，且画布被非等比拉伸显示，任何换算公式都会把编辑框算到屏幕外（实测 top 偏移 1700px+，表现为"双击没反应"）。

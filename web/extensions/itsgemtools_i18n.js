@@ -20,6 +20,7 @@ const NODE_NAMES = {
     "ItsGemImageCompare": { zh: "图像对比 A/B", en: "Image Compare A/B" },
     "SetImageVar": { zh: "设置图像变量", en: "Set Image Variable" },
     "GetImageVar": { zh: "读取图像变量", en: "Get Image Variable" },
+    "GemColorCalibrator": { zh: "颜色校准（原图参考）", en: "Color Calibrator (ItsGemTools)" },
 };
 
 function detectLang() {

@@ -5,7 +5,7 @@ import { app } from "../../../scripts/app.js";
 //  - 标题栏/主体着淡紫系（node.color / node.bgcolor）
 //  - 节点边框淡紫（onDrawForeground 描边，Nodes 2.0 下走 DOM 时自动还原主题）
 //  - 用轮询补装，不依赖 nodeCreated 钩子（新版前端钩子对已有节点不触发）
-// 仅作用于本包 7 个节点，不影响其他节点。
+// 仅作用于本包全部盒子型节点（Label 为透明自绘节点，由 itsgemtools_label.js 独立处理），不影响其他节点。
 // ============================================================
 
 const NODE_TYPES = new Set([
@@ -21,6 +21,9 @@ const NODE_TYPES = new Set([
     "ItsGemImageCompare",
     "SetImageVar",
     "GetImageVar",
+    "GemTiledUpscale",
+    "GemTiledUpscaleStitch",
+    "GemColorCalibrator",
 ]);
 
 const TITLE_COLOR = "#8a63d2"; // 标题栏：淡紫
