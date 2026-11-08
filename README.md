@@ -141,6 +141,7 @@ Load Image ─┬─> Adjust Color & Effect ─┬─> after ─┐
 
 ### Image Compare A/B（节点键 `ItsGemImageCompare`，显示名 Image Compare A/B）
 面板内嵌预览：SLIDE 滑动分割线逐步揭示 B 图，A/B 一键切换；尺寸标注、状态提示；模式随工作流保存。不覆盖 ComfyUI 内置 Compare Images 节点。
+- **预览区不吞滚轮**：鼠标停在预览上滚动时，事件转交画布处理，行为与把鼠标放在画布空白处完全一致——跟随设置 `Comfy.Canvas.MouseWheelScroll`（`zoom` 滚轮缩放 / `panning` 滚轮平移），Ctrl/⌘ 强制缩放，Shift 横向，缩放锚点在指针处。
 
 ### Set Image Variable / Get Image Variable（节点键 `SetImageVar` / `GetImageVar`）
 全局图像变量（进程内存储），方便大型工作流跨节点传递图片、避免拉长线：

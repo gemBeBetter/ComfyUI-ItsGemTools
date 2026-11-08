@@ -320,6 +320,22 @@ function buildPanel(node) {
     updateModeButtons(state);
 
     const signal = abort.signal;
+    // 滚轮不被预览区吞掉：LiteGraph 的 wheel 监听绑在 <canvas> 元素自身上
+    // （bindEvents: canvas.addEventListener("wheel", processMouseWheel)），
+    // 而 DOM widget 是叠在 canvas 之上的兄弟元素，滚轮事件根本到不了画布 ->
+    // 鼠标停在对比预览上时滚轮/缩放全部失效。
+    // ComfyUI 自身 DOM 控件（bindMultilineTextareaWidget）的成熟做法就是手动把
+    // 原始 wheel 事件转交 app.canvas.processMouseWheel，这里照做：
+    // 行为与把鼠标放在画布空白处完全一致，跟随 Comfy.Canvas.MouseWheelScroll
+    // 设置（默认平移，Ctrl/⌘ 缩放，Shift 横向），缩放锚点也在指针处。
+    const forwardWheelToCanvas = (event) => {
+        const canvas = app.canvas;
+        if (typeof canvas?.processMouseWheel !== "function") return;
+        canvas.processMouseWheel(event);
+        event.stopPropagation();
+    };
+    // passive:false —— processMouseWheel 内部要 e.preventDefault()
+    root.addEventListener("wheel", forwardWheelToCanvas, { signal, passive: false });
     window.addEventListener("itsgem-lang-change", () => refreshLang(state), { signal });
     const resized = new ResizeObserver(() => applyClip(state));
     resized.observe(stage);

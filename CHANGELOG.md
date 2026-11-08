@@ -14,6 +14,13 @@
   - **前端登记**：淡紫主题 `NODE_TYPES` 与 i18n 双语标题（`按遮罩裁切（图像）` / `Image Crop By Mask (ItsGemTools)`）已加入。
   - **实测待进行**：需重启 ComfyUI 后由用户在 `豆包切脸` 工作流里把节点 127 换成新节点跑一遍。
 
+### 修复
+
+- **Image Compare A/B 预览区不再吞掉鼠标滚轮（`web/extensions/itsgemtools_compare.js`，2026-11-09）**：鼠标停在对比预览上时滚轮/缩放完全失效（画布放到很大时尤其明显）。
+  - **根因（读前端源码确认，不是猜）**：LiteGraph 的 `bindEvents()` 把 wheel 绑在 `<canvas>` 元素自身（`canvas.addEventListener("wheel", processMouseWheel)`），而 DOM widget 预览面板是叠在 canvas 之上的独立元素，滚轮事件根本不经过 canvas，`processMouseWheel` 永不触发；面板自身也没有任何滚轮处理，于是滚轮被静默吞掉。
+  - **修复（照业界成熟做法，不自造算法）**：ComfyUI 自己的 DOM 控件 `bindMultilineTextareaWidget` 就是手动把原始 `wheel` 转交给画布——这里同样在面板 `root` 上加 `wheel` 监听（`passive:false`），命中即 `app.canvas.processMouseWheel(event)` 并 `stopPropagation`。因为直接复用画布同一入口，行为完全跟随 `Comfy.Canvas.MouseWheelScroll` 设置（`zoom` / `panning`）、Ctrl/⌘ 缩放、Shift 横向，缩放锚点仍在指针处。**只新增滚轮转发**：SLIDE 滑动、A/B 切换、面板尺寸/模式保存逻辑零改动。
+  - **实测（真实前端，ComfyUI 0.44.0 / frontend 1.57.6，预览区中心 325,403）**：对照（同坐标但 `bubbles:false`，等价修复前的路径）scale 1.00000、offset 不变、`defaultPrevented=false`；修复后冒泡事件 scale 1→1.1、offset 改变、`defaultPrevented=true`；CDP `Input.dispatchMouseEvent(type="mouseWheel", modifiers=2)` 受信事件 scale 1.1→1.21；普通受信滚轮按当前 `zoom` 设置 1.21→1.1。`node --check` 通过；`/extensions/ItsGemTools/extensions/itsgemtools_compare.js` 服务端 200 且含新逻辑。
+
 ## [1.0.0] - 2026-11-06
 
 ### 新增
