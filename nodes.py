@@ -3108,6 +3108,113 @@ class GemColorCalibrator:
             return []
 
 
+class GemImageCropByMask:
+    """
+    Image Crop By Mask (ItsGemTools)
+
+    复刻 KJNodes `Image Crop By Mask`（comfyui-kjnodes / nodes/image_nodes.py ->
+    `ImageCropByMask`）：对 batch 内每张图，取对应 mask 非零区域的外接框并裁出。
+
+    与原版刻意不同的只有"原版会直接崩"的三条路径，原版能跑通时行为逐像素一致：
+      * 空遮罩（全 0）：返回整帧 + 打印告警，而不是在 `torch.where(...)[0]` 上抛 IndexError；
+      * batch 内各项外接框尺寸不同：居中补零到统一尺寸再拼接，而不是 `torch.cat` 抛尺寸错误；
+      * mask 分辨率与图不同：最近邻缩放到图尺寸 + 告警，而不是悄悄越界索引。
+
+    无任何 widget、输入输出与原版完全相同，工作流里可把 `ImageCropByMask`
+    原位换成 `GemImageCropByMask`。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {'required': {'image': ('IMAGE',), 'mask': ('MASK',)}}
+
+    RETURN_TYPES = ('IMAGE',)
+    RETURN_NAMES = ('image',)
+    FUNCTION = 'crop'
+    CATEGORY = 'ItsGemTools/image'
+    DESCRIPTION = (
+        'Crops each image of the batch to the bounding box of the matching mask\'s '
+        'non-zero region (same behaviour as KJNodes\' Image Crop By Mask).'
+    )
+
+    def crop(self, image, mask):
+        # IMAGE: [B,H,W,C]; MASK: [B,H,W]（兼容 [H,W] / [B,H,W,1] / 旧式 list batch）
+        if isinstance(image, (list, tuple)):
+            image = torch.stack(list(image))
+        if not torch.is_tensor(image):
+            raise ValueError(f'Expected IMAGE tensor, got {type(image)}')
+        if image.ndim == 3:
+            image = image.unsqueeze(0)
+        if image.ndim != 4:
+            raise ValueError(f'Expected IMAGE shape [B,H,W,C], got {tuple(image.shape)}')
+
+        m = mask if torch.is_tensor(mask) else torch.as_tensor(mask)
+        if m.ndim == 4 and m.shape[-1] == 1:
+            m = m[..., 0]
+        if m.ndim == 2:
+            m = m.unsqueeze(0)
+        if m.ndim != 3:
+            raise ValueError(f'Expected MASK shape [B,H,W] or [H,W], got {tuple(m.shape)}')
+
+        B, H, W, C = image.shape
+        if B == 0:
+            return (image,)
+
+        # 原版语义：先 round 再判 >0（等价于阈值 0.5 的硬边判定）
+        m = m.round().to(device=image.device, dtype=torch.float32)
+
+        if m.shape[1] != H or m.shape[2] != W:
+            print(
+                f'[GemImageCropByMask] mask {int(m.shape[1])}x{int(m.shape[2])} != image {H}x{W}, '
+                'nearest-resizing mask to the image size.'
+            )
+            m = torch.nn.functional.interpolate(
+                m.unsqueeze(1), size=(H, W), mode='nearest',
+            ).squeeze(1)
+
+        boxes = []
+        for b in range(B):
+            mb = m[min(b, m.shape[0] - 1)]
+            rows = torch.any(mb > 0, dim=1)
+            cols = torch.any(mb > 0, dim=0)
+            if not bool(rows.any()) or not bool(cols.any()):
+                # 原版此处 IndexError；退化为一整帧，保证整条链路不断
+                print(
+                    f'[GemImageCropByMask] batch {b}: mask is empty, returning the full frame.'
+                )
+                boxes.append((0, 0, W, H))
+                continue
+            ys = torch.where(rows)[0]
+            xs = torch.where(cols)[0]
+            boxes.append((int(xs[0]), int(ys[0]), int(xs[-1]) + 1, int(ys[-1]) + 1))
+
+        crops = [image[b:b + 1, y0:y1, x0:x1, :] for b, (x0, y0, x1, y1) in enumerate(boxes)]
+        sizes = [(int(c.shape[1]), int(c.shape[2])) for c in crops]
+        max_h = max(s[0] for s in sizes)
+        max_w = max(s[1] for s in sizes)
+
+        if all(s == (max_h, max_w) for s in sizes):
+            # 常规路径：与原版完全一致（直接 cat）
+            return (torch.cat(crops, dim=0),)
+
+        # 混合尺寸：居中补零到统一尺寸（原版在这里会因 cat 尺寸不一致而报错）
+        print(
+            f'[GemImageCropByMask] batch bboxes differ in size {sizes}, '
+            f'centred-padding each crop into {max_w}x{max_h}.'
+        )
+        padded = []
+        for crop in crops:
+            h, w = int(crop.shape[1]), int(crop.shape[2])
+            top = (max_h - h) // 2
+            left = (max_w - w) // 2
+            canvas = torch.zeros(
+                (1, max_h, max_w, C), dtype=crop.dtype, device=crop.device,
+            )
+            canvas[:, top:top + h, left:left + w, :] = crop
+            padded.append(canvas)
+        return (torch.cat(padded, dim=0),)
+
+
 NODE_CLASS_MAPPINGS = {
     "maskfeather": MaskFeather,
     "SetImageAlpha": SetImageAlpha,
@@ -3127,6 +3234,8 @@ NODE_CLASS_MAPPINGS = {
     "GemTiledUpscaleStitch": GemTiledUpscaleStitch,
     # Color Calibrator：复刻自 BlueBox ColorCalibratorBlueBox（独立命名，互不覆盖）
     "GemColorCalibrator": GemColorCalibrator,
+    # Image Crop By Mask：复刻自 KJNodes ImageCropByMask（独立命名，kjnodes 原版零改动）
+    "GemImageCropByMask": GemImageCropByMask,
     # 前端纯标注节点：后端空实现，保证后端认识该类型（不报 missing node）
     "Label (ItsGemTools)": GemLabel,
     # 旧名称保留映射（菜单中隐藏），保证历史保存的工作流仍能加载。
@@ -3149,6 +3258,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "GemTiledUpscale": "Tiled Upscale (ItsGemTools)",
     "GemTiledUpscaleStitch": "Tiled Upscale Stitch (ItsGemTools)",
     "GemColorCalibrator": "Color Calibrator (ItsGemTools)",
+    "GemImageCropByMask": "Image Crop By Mask (ItsGemTools)",
     "Label (ItsGemTools)": "Label (ItsGemTools)",
     # 空字符串让旧节点名在右键菜单中隐藏，仅作为工作流兼容别名。
     "SAM3DistanceFeather": "",

@@ -21,6 +21,7 @@ const NODE_NAMES = {
     "SetImageVar": { zh: "设置图像变量", en: "Set Image Variable" },
     "GetImageVar": { zh: "读取图像变量", en: "Get Image Variable" },
     "GemColorCalibrator": { zh: "颜色校准（原图参考）", en: "Color Calibrator (ItsGemTools)" },
+    "GemImageCropByMask": { zh: "按遮罩裁切（图像）", en: "Image Crop By Mask (ItsGemTools)" },
 };
 
 function detectLang() {

@@ -23,6 +23,7 @@
 | **Image Compare A/B** | 修图软件对比模式 | SLIDE 滑动逐帧揭示 A/B，A/B 一键切换，面板内嵌预览 |
 | **Tiled Upscale / Tiled Upscale Stitch** | 分块放大（Qwen 编辑链） | 复刻 AusBoss 切块/拼回逻辑；Stitch 端新增 FFT 相位相关亚像素几何配准，消除 QwenImage 2.1 + 自训 LoRA 重绘导致的接缝偏移 / 重影；32 倍数对齐，纯 torch 零额外依赖 |
 | **Color Calibrator** | 双图颜色校准 | 复刻 BlueBox `ColorCalibratorBlueBox`：自动对比两图检测变化区 → 遮罩外逐通道仿射校色 → 锚点对比度回压 → 遮罩外低频回贴（高频保留）或原图回贴；输出 image / mask / changed_ratio |
+| **Image Crop By Mask** | 按遮罩自动裁切 | 复刻 KJNodes `ImageCropByMask`：按 mask 非零区外接框裁图，零 widget、与原版逐像素一致；空遮罩 / 混合尺寸 / 遮罩分辨率不符三条原版会崩的路径改为安全降级 |
 | **Set / Get Image Variable** | 跨节点传递图片 | 全局图像变量：Set 写入（image 透传）、Get 按 key 读取，大型工作流免拉长线 |
 | **Label** | 工作流注释 / 分区说明 | 浮动文字标签：双击就地改文案（回车或点外部生效），字号 / 字体 / 字色 / 对齐 / 背景（含 8 位 HEX 半透明）/ 内边距 / 圆角 / 角度全可调，支持 `\n` 换行 |
 
@@ -190,6 +191,16 @@ Set Image Variable（key=my_image，image=任意 IMAGE）→ 串在流程中
 - **依赖**：torch / numpy / PIL；`expand` 超过 32px 时优先用 scipy 半分辨率 EDT 加速，**scipy 缺失自动退化为 GPU max_pool**（结果一致，仅大半径略慢），不影响使用。
 - **命名**：`Color Calibrator (ItsGemTools)` 带品牌后缀，与 BlueBox 的 `Color Calibrator (BlueBox)` 互不冲突、不会被合并覆盖；搜索框输入 `color calibrator` 即可前缀命中。
 
+### Image Crop By Mask（节点键 `GemImageCropByMask`，显示名 Image Crop By Mask (ItsGemTools)）
+复刻 KJNodes `ImageCropByMask`（comfyui-kjnodes / `nodes/image_nodes.py`）——**算法按原版实现，代码在本包内重写；kjnodes 原版零改动，两个节点键名/显示名互不冲突、可同画布共存**。典型场景：`SAM3_Detect` 出人脸遮罩 → `GrowMask` 扩边 → 本节点裁出人脸图 → 再送 `CenterCropImages` 对齐尺寸进 LoRA 数据集。
+- **算法**：与原版逐行一致——遮罩先 `round()` 再判 `>0`（等价 0.5 硬边阈值），逐张取非零区的 `rows/cols` 首末索引作为外接框，用该框裁出对应图；batch 项数多于遮罩项数时沿用原版的"末项复用"（`min(b, mask.shape[0]-1)`）。
+- **接口**：只有 `image` + `mask` 两个输入、`image` 一个输出，**零 widget**，因此工作流里可把 `ImageCropByMask` 原位换成 `GemImageCropByMask`（连线、尺寸、位置都不用动）；RGBA 输入会原样透传第 4 通道。
+- **三条安全降级（原版会直接报错，这里不报错并打印告警）**：
+  - **空遮罩（全 0）**：原版在 `torch.where(...)[0][[0,-1]]` 上抛 IndexError；本节点退化为返回**整帧**，整条链路不断（batch 里混一张空遮罩也不会连累其他帧）。
+  - **batch 内各帧外接框尺寸不同**：原版 `torch.cat` 尺寸不一致直接崩；本节点把每张裁图**居中补零**到 batch 内最大尺寸后拼接，输出统一尺寸。
+  - **mask 分辨率与图不一致**：原版会越界索引出错；本节点用**最近邻**把遮罩缩放到图尺寸后继续（硬边不插值，避免糊边扩框）。
+- **兼容性**：只依赖 `torch`，ComfyUI 自带，无新增依赖。
+
 ## 中英双语
 
 - 节点标题与 Image Compare 面板按钮跟随 ComfyUI 界面语言自动切换（Settings → Language 选简体中文即显示中文）。
@@ -209,6 +220,7 @@ Set Image Variable（key=my_image，image=任意 IMAGE）→ 串在流程中
 | maskfeather（羽化） | torch / **scipy（可选）** | 使用 `scipy.ndimage.distance_transform_edt` 计算有符号欧氏距离；**未装 scipy 时该节点报错并提示，其他节点不受影响** |
 | Set Image Alpha / Set Masked Alpha | torch | ComfyUI 自带 |
 | Color Calibrator | torch / numpy / **scipy（可选）** | `expand` > 32px 时用 scipy 半分辨率 EDT 加速膨胀；**未装 scipy 时自动退化为 GPU max_pool，结果一致、仅大半径略慢** |
+| Image Crop By Mask | torch | 纯索引裁切，ComfyUI 自带 |
 | Before/After Preview | torch | ComfyUI 自带 |
 | Image Compare A/B | 前端内联 | 面板预览纯浏览器 JS，零依赖 |
 | Label | 前端内联 | 前端画布自绘、双击编辑；后端仅注册空实现类，不参与执行 |
