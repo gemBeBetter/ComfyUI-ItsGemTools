@@ -6,6 +6,33 @@
 
 ### 新增
 
+- **Fast Groups Bypasser（节点键 `Fast Groups Bypasser (ItsGemTools)`，前端文件 `web/extensions/itsgemtools_fast_groups_bypasser.js`）**：复刻 rgthree-comfy 的 `Fast Groups Bypasser (rgthree)`——**机制等价、代码在本包内独立重写**（rgthree 原版零改动，类型名带 `(ItsGemTools)` 后缀，可与 rgthree 原节点同画布共存）。
+  - **关系建立方式（与原版一致）**：纯前端虚拟节点（`isVirtualNode = true`，无输入、不进 prompt、不参与执行）；每 450ms 枚举工作流全部分组，对每个组按「**节点中心点是否落在组矩形内**」算出成员——**不靠连线**，组增删/改名/拖动自动跟上；`recomputeInsideNodes` 之类前端内部方法一概不依赖，只用 `group.bounding` + 节点包围盒自行判定。
+  - **交互等价**：一行一组（行底=启用亮紫/旁路暗紫/混合中间色，左侧色条取组边框色），点击整组在 `0(启用) ↔ 4(旁路)` 翻转；右侧箭头定位并缩放该组；状态由组内节点真实 `mode` 读回（别处手动改会立刻显示为「混合」）；右键菜单「全部旁路 / 全部启用 / 全部翻转 / 重新扫描分组」；Properties 七项与原版同名同义（`matchTitle` 正则、`matchColors` 颜色名与 hex 归一化、`showNav`、`showAllGraphs`、`sort`、`customSortAlphabet`、`toggleRestriction` 的 `max one` / `always one`），子图节点 mode 递归切换（等价 `changeModeOfNodes`）。
+  - **主题与归类**：标题栏 `#8a63d2` / 主体 `#241f38` / 描边 `#c4a6ff`（沿用本包 `itsgemtools_appearance.js`，节点已登记进 `NODE_TYPES`）；分类 `ItsGemTools`；i18n 中文名 `按组旁路开关`。
+  - **一处主动改进**：组内 `Note` / `MarkdownNote` / `Label (ItsGemTools)` 与节点自身被排除在旁路集合外——否则整组旁路会把标签/备注一起变灰，看不见分区说明。
+  - **后端配合**：`nodes.py` 新增 `GemFastGroupsBypasser` 空实现类并登记两张映射表（与 `GemLabel` 同款做法，纯前端节点也必须让后端认识类型，否则加载/排队报 missing node）。
+  - **验证（真实后端 + 无浏览器逻辑测试台）**：① `py_compile` 通过、新增映射键写入两张表；② 临时实例（**端口 8199、独立 `--user-directory`，不动 8188 运行实例**）启动后 `GET /object_info/Fast%20Groups%20Bypasser%20(ItsGemTools)` **200**，`category` / `description` / `python_module=custom_nodes.ItsGemTools` 正确；`GET /extensions` 已挂载 `itsgemtools_fast_groups_bypasser.js`；验证实例用完**整树关闭、8199 已释放、无孤儿进程**；③ Node 逻辑测试台（把前端文件里的纯逻辑注入假 `LGraphNode`/`LiteGraph`/`app` 后跑）**14 项全过**：3 组识别与 position 排序、组内成员判定（自动排除 Label 与自身）、点击翻转（4↔0）、手动改单节点后显示「混合」、全部旁路/全部启用、`always one` 不允许关掉最后一组、`max one` 开 B 自动关 A、`matchTitle` 正则过滤、`matchColors` hex 归一化过滤、alphanumeric 排序、组删除同步删行、无匹配不抛错。测试台顺带抓出一个真实缺陷并已修：`refreshRows()` 无参调用（`loadedGraphNode` 路径）时包围盒缓存为 `undefined` 导致 `bounds is not a function`。
+  - **实测待进行**：需**重启 ComfyUI（后端要重载 nodes.py）**后由用户确认：节点库搜索 `fast groups` 出现两个（ItsGemTools / rgthree）、点行开关能真正翻转组内节点 mode、箭头能定位，Nodes 2.0 与经典渲染下外观一致。
+
+- **Save Image (Advanced+JPG)（节点键 `GemSaveImageAdvanced`，显示名 `Save Image (Advanced+JPG) (ItsGemTools)`）**：复刻 ComfyUI 内置 `Save Image (Advanced)`（`comfy_extras/nodes_images.py` / `SaveImageAdvanced`）——**编码逻辑只读复用、内置节点与 AusBoss 等公共组件零改动、键名/显示名互不冲突可同画布共存**；并追加 JPG，默认保存即 JPG（独立模块 `gem_save_image_advanced.py`，`nodes.py` 只加 import 与两条映射）。
+  - **与内置节点逐项对齐**：同样的 `filename_prefix`（`%date:%` / `%batch_num%` / 子目录）、`folder_paths.get_save_image_path` 计数器、`ui.images` 回执、`images` 原样透传、`OUTPUT_NODE`、`--disable-metadata` 生效；png（8/16-bit + channels 的 auto/1/3/4 语义 + `inject_png_metadata`）、exr（`_to_scene_linear` + 16/32-bit float + `inject_exr_metadata` + asset_manager 预览）、avif（`_save_avif` + crf + `inject_avif_metadata`）三条路径直接调用核心编码助手，像素级行为与内置一致。
+  - **JPG 默认档（"视觉无损前提下体积尽量小"的落地）**：① 4:4:4 不降采样色度（彩色/文字边缘不糊）；② `optimize=True` Huffman 优化（解码像素不变，只变小）；③ 基线与渐进两种布局各编一遍取更小者（解码像素相同，纯白捡体积）；④ **auto 质量**：以目标 PSNR（默认 47 dB）为下限，在 88–99 区间二分搜最低 quality（本机实测 q99→q100 体积再涨 35%、PSNR 仅 +1 dB，故上界收到 99）。搜索阶段一律 `optimize=False` 快编（量化表与解码像素和定稿完全一致），只在定稿那遍开优化，15 MP 图单张约 0.7–1.5 s。
+  - **JPG 通道语义**：JPEG 无 alpha，RGBA 按白底合成（与浏览器 / Photoshop 展平一致），单通道走灰度；png 的 `channels` 语义不受影响。不写任何 EXIF/注释段。
+  - **诚实边界**：JPEG 本身有损，这里做到的是**可量化的视觉无损**（PSNR 可查、可调），逐像素无损请把 `format` 切 png。内置节点的"动画 AVIF"多帧封装（`save_mode = animated`）未复刻，只做静态 AVIF。
+  - **实测（本机真实 4K 级样图，ComfyUI-VOSR2 用例，4:4:4 + optimize）**：4K 中文小字图 16.4 MB（节点 PNG）→ 默认 JPG 5.41 MB（34.1%）、q97、PSNR 47.13 dB；建筑 12.4 MB → 2.93 MB（24.0%）、q94、47.18 dB；landscape 4.8 MB → 1.83 MB（38.5%）、q98、48.11 dB。对照 fixed q96 三图均为 PNG 的 29.6–30.6%（PSNR 46.2 / 48.4 / 46.1）；4:2:0 q92 可到 14.5–16.3% 但 PSNR 掉到 41.5–44.6（彩色边缘有损，仅作体积对照）。
+  - **验证（真实后端跑通，不只离线）**：临时实例（端口 8199、独立 `--user-directory`，避免扰动 8188 上的运行实例）启动 12 s 后 `GET /object_info/GemSaveImageAdvanced` 200；`POST /prompt` 执行 `LoadImage → GemSaveImageAdvanced → PreviewImage` 返回 `status: success`，落盘 `out_00001.jpg`（PIL 可解、progressive、无 EXIF、PSNR 47.60 dB），下游 PreviewImage 正常收图（透传链路成立）；离线另验 png 元数据内嵌（`prompt` tEXt 命中）、exr、avif 三条路径。验证实例用完即整树关闭，8199 确认释放，8188 原实例未动。
+  - **实测待进行**：重启 ComfyUI Desktop 后由用户确认 `merge_vae_fixed_v4`（ep10，节点 631 已换成该节点、默认 jpg）的控件展示与出图；该节点在工作流里仍是旁路（mode 4），取消旁路才真正写盘。
+
+- **Image Folder（节点键 `GemImageFolder`，显示名 `Image Folder (ItsGemTools)`）**：复刻 AusBoss `Image Folder 🆎`（ComfyUI-AusBoss-main 2.20.5，MIT / `nodes/node_image_folder.py` + `nodes/_image_folder_helpers.py` + `js/image_folder/index.js` + `js/shared/*`）——**后端实现与前端交互按原版复刻、代码在本包内重写，AusBoss 原版零改动、键名/显示名互不冲突可同画布共存**。
+  - **接口逐项对齐**：9 个 widget 同序同选项（`source` input/output、`folder`、`subfolders`、`sort` name / newest first / oldest first、`pictures` 勾选 JSON、`run` all in one run / one per run、`position`、`after_run` next / stay / random、`at_the_end` stop the run / start over），tooltip 原文照搬；5 个输出 `image` / `mask` / `filename` / `index` / `count`，`OUTPUT_IS_LIST=(True,True,True,True,False)`；`IS_CHANGED` 指纹格式、`VALIDATE_INPUTS` 语义、`which()` 到底语义、64×64 空 mask 约定、UI 回执 `{"count","loaded","names"}` 全部同原版。
+  - **前端单文件内联**：本包 `WEB_DIRECTORY="./web"`，ComfyUI 只对 `web/extensions` 挂一次静态目录、且只自动加载 `**/*.js`（`.mjs` 只能被 import），所以把上游 `index.js` + `shared/{index,image_folder,panel_layout,widget_card_math,prompt_scope}.mjs` 全部内联成 `web/extensions/itsgemtools_image_folder.js`；改成本包淡紫 `#c4a6ff` 主题、文案走 `window.__ITSGEM_I18N` 并监听 `itsgem-lang-change` 重建。
+  - **交互等价**：瓦片墙 + 单击勾选 + Shift 段选 + All / None / Add / ↻、计数条（`X of Y picked` / `next N` / `all done`）、`one per run` 白色 ring 与双击定位 Picture、`afterQueued` 自动推进 position、Browse 弹窗（只看 input/output 目录树）、Add 菜单（图片 / 整个文件夹，浏览器 `/upload/image` 三并发复制进 input、大文件夹确认框、同名覆盖写）、拖拽文件夹/图片、IntersectionObserver 懒加载缩略图、`fillNodeHeight`（删 `computeSize` 用 `computeLayoutSize` 吃满高度）、`onConfigure` 恢复工作流自带 folder/pick、`onExecuted` 记 done 与文件名行、`onRemoved` 清理。
+  - **命名隔离**：路由 `/itsgemtools/image_folder/{folders,list,thumb}`、UI key `itsgemtools_image_folder`、报错前缀 `Image Folder (ItsGemTools):`、分类 `ItsGemTools/image`；i18n `NODE_NAMES` 加 `批量出图（文件夹）` / `Image Folder (ItsGemTools)`；`GemImageFolder` 已登记进 `itsgemtools_appearance.js` 的 `NODE_TYPES`，节点沿用本包淡紫外观（标题栏 `#8a63d2` / 主体 `#241f38` / 描边 `#c4a6ff`），不再保留工作流里存的 AusBoss 青绿 `#14424d`。
+  - **一处安全降级（真实启动下行为不变）**：原版 import 时直接读 `PromptServer.instance`，无服务器（离线测试 / CI）时 AttributeError 会把整个包带崩；这里先判空再注册路由。
+  - **验证（离线，以上游原文为参照）**：`py_compile` / `node --check` 通过；等价性脚本 **296 项全通过**——按文件路径加载上游 `_image_folder_helpers.py`、把上游 `node_image_folder.py` 装进合成包让相对 import 成立、两边用同一对临时 input/output 根，逐函数比对 `clean_folder` / `looks_full` / `place_inside` / `output_name` / `parse_picked` / `choose` / `which` / `fingerprint` / `thumbnail` / `natural_key` / `list_pictures`（四种排序 × 三种 limit）/ `list_folders`，逐像素比对 `load_picture`，逐条比对 `load()` 的 8 组真实跑（image/mask/names/numbers/count/UI note）、`IS_CHANGED`、`VALIDATE_INPUTS`（含空文件夹与多余参数）、三条错误路径，外加真 aiohttp 端到端跑通三条路由（list / folders / thumb 的 200、递归子目录、越界 400、缺图 404、缩略图 JPEG 头）、接口契约（widget 名/顺序/类型/选项）、映射与路由常量、工作流原位替换（widget 数与 `widgets_values_named`、输出插槽名与类型、只改 `type` 后仍合法）、`import custom_nodes.ItsGemTools` 注册检查。
+  - **实测待进行**：需重启 ComfyUI 后由用户在 `restorV4_豆包切图_sam3_crop_flow` 工作流里把节点 10（`AUSBOSS_NODES_ImageFolder`）换成 `GemImageFolder` 跑一遍，确认相册面板与三条路由在真实前端（Nodes 2.0 / 经典渲染）下表现正常。
+
 - **Image Crop By Mask（节点键 `GemImageCropByMask`，显示名 `Image Crop By Mask (ItsGemTools)`）**：复刻 KJNodes `ImageCropByMask`（comfyui-kjnodes / `nodes/image_nodes.py`）——算法按原版实现、代码在本包内重写，**kjnodes 原版零改动、键名/显示名互不冲突可同画布共存**。
   - **算法与原版逐行一致**：遮罩先 `round()` 再判 `>0`（等价 0.5 硬边阈值）→ 逐张取非零区 `rows/cols` 首末索引为外接框 → 用该框裁出对应图；batch 项数多于遮罩项数时沿用原版"末项复用"（`min(b, mask.shape[0]-1)`）。
   - **接口零 widget**：只有 `image` + `mask` 输入、`image` 输出，与 `豆包切脸` 工作流里的节点 127 完全一致，可**原位替换**（连线/尺寸/位置不动）；RGBA 输入透传第 4 通道。
@@ -13,6 +40,12 @@
   - **验证**：`py_compile` 通过；离线等价性测试 **72 项全通过**——其中 60 项把原版 `crop()` 原文照抄作参照（40 组随机矩形遮罩 + 20 组软边遮罩 0.4/0.62 验证 round 阈值语义）逐像素 `torch.equal` 一致，另含 batch3 同尺寸/RGBA 透传、空遮罩整帧、混合外接框居中补零（左右补零 + 中间内容断言）、遮罩尺寸不符、接口契约（输入/返回/分类/映射键/显示名/不与 `ImageCropByMask` 撞键）、工作流实际尺寸（1152×864 遮罩 500×400 框 → 输出 1×500×400×3）。
   - **前端登记**：淡紫主题 `NODE_TYPES` 与 i18n 双语标题（`按遮罩裁切（图像）` / `Image Crop By Mask (ItsGemTools)`）已加入。
   - **实测待进行**：需重启 ComfyUI 后由用户在 `豆包切脸` 工作流里把节点 127 换成新节点跑一遍。
+
+### 变更
+
+- **Save Image (Advanced+JPG) 纳入本包淡紫主题（`web/extensions/itsgemtools_appearance.js`，2026-11-18）**：`GemSaveImageAdvanced` 之前没进 `NODE_TYPES` 白名单，所以一直是 ComfyUI 默认蓝灰外观。已补登记，跟随 `TITLE_COLOR #8a63d2` / `BODY_COLOR #241f38` / `BORDER_COLOR #c4a6ff`。存量节点由 400ms 轮询补装、新节点走 `nodeCreated`，刷新页面即生效（无需重启后端）。
+
+- **按组开关：行状态文案「旁路 / 混合」改为「关闭 / 部分关闭」（前端，2026-11-18）**：`旁路`（Bypass）对非 ComfyUI 老手太抽象，改成与「启用」成对的「关闭」；组内一半启用一半关闭时显示「部分关闭」（原「混合」）。同步改：右键菜单「全部旁路」→「全部关闭」；内置 Help 里补一句「关闭(4) = ComfyUI 的 Bypass/旁路，节点变灰跳过」把术语还给老手；i18n 中文名「按组旁路开关」→「按组开关」。仅前端文件 `web/extensions/itsgemtools_fast_groups_bypasser.js` 与 `itsgemtools_i18n.js`，**刷新页面即生效，无需重启后端**。节点内部行为（`mode 0/4`）不变。
 
 ### 修复
 

@@ -9,6 +9,29 @@ import numpy as np
 import torch
 from PIL import Image
 
+# 批量出图 / Image Folder（复刻自 AusBoss AUSBOSS_NODES_ImageFolder）：独立模块、逻辑自包含
+try:
+    from .itsgem_image_folder import GemImageFolder
+except ImportError:  # 以脚本方式单独 import nodes.py 时的回退
+    from itsgem_image_folder import GemImageFolder
+
+# Save Image (Advanced) 复刻 + JPG（复刻自 ComfyUI 内置 SaveImageAdvanced）：独立模块，核心零改动
+try:
+    from .gem_save_image_advanced import GemSaveImageAdvanced
+except ImportError:  # 以脚本方式单独 import nodes.py 时的回退
+    from gem_save_image_advanced import GemSaveImageAdvanced
+
+try:
+    from .text_restore_pipeline import (
+        QwenRestorePipeline, CLIP_NAME, UNET_NAME, VAE_NAME, NEGATIVE, CAPTION_STRONG,
+        ALIGN_INSTRUCTION,
+    )
+except ImportError:  # 以脚本方式单独 import nodes.py 时的回退
+    from text_restore_pipeline import (  # type: ignore
+        QwenRestorePipeline, CLIP_NAME, UNET_NAME, VAE_NAME, NEGATIVE, CAPTION_STRONG,
+        ALIGN_INSTRUCTION,
+    )
+
 try:
     import folder_paths
 except Exception:
@@ -1487,6 +1510,31 @@ class GemLabel:
     RETURN_TYPES = ()
     FUNCTION = "noop"
     CATEGORY = "ItsGemTools"
+
+    def noop(self):
+        return ()
+
+
+class GemFastGroupsBypasser:
+    """
+    纯前端节点（Fast Groups Bypasser (ItsGemTools)）的后端空实现。
+    真正的分组枚举、每行开关的绘制与"启用/旁路"切换全部由前端扩展
+    (web/extensions/itsgemtools_fast_groups_bypasser.js) 完成，
+    本类不参与任何执行逻辑，仅用于让后端认识该节点类型，
+    避免工作流加载 / 排队时出现 "A node type is missing or unavailable"。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {}, "optional": {}}
+
+    RETURN_TYPES = ()
+    FUNCTION = "noop"
+    CATEGORY = "ItsGemTools"
+    DESCRIPTION = (
+        "纯前端「按组快速旁路」节点：把工作流里的分组变成一行行开关，"
+        "点一下即旁路/启用整组。不靠连线，靠节点中心点是否落在组框内建立关系。"
+    )
 
     def noop(self):
         return ()
@@ -3215,6 +3263,859 @@ class GemImageCropByMask:
         return (torch.cat(padded, dim=0),)
 
 
+def _gem_list_text_encoders():
+    """枚举 text_encoders / clip 目录模型文件（CLIP 下拉）。"""
+    if folder_paths is None:
+        return [CLIP_NAME]
+    names = []
+    for t in ("text_encoders", "clip"):
+        try:
+            names.extend(folder_paths.get_filename_list(t))
+        except Exception:
+            pass
+    names = sorted(set(names))
+    return names if names else [CLIP_NAME]
+
+
+def _gem_list_diffusion():
+    """枚举 diffusion_models / unet 目录模型文件（MODEL 下拉）。"""
+    if folder_paths is None:
+        return [UNET_NAME]
+    names = []
+    for t in ("diffusion_models", "unet"):
+        try:
+            names.extend(folder_paths.get_filename_list(t))
+        except Exception:
+            pass
+    names = sorted(set(names))
+    return names if names else [UNET_NAME]
+
+
+def _gem_list_vae():
+    """枚举 vae 目录模型文件（VAE 下拉）。"""
+    if folder_paths is None:
+        return [VAE_NAME]
+    try:
+        names = sorted(set(folder_paths.get_filename_list("vae")))
+    except Exception:
+        names = []
+    return names if names else [VAE_NAME]
+
+
+def _llm_roots():
+    """folder_paths 注册的全部 LLM 搜索路径（含 extra-model-paths）。"""
+    if folder_paths is None:
+        return []
+    try:
+        roots = list(folder_paths.get_folder_paths("LLM"))
+    except Exception:
+        roots = []
+    if not roots:
+        roots = [os.path.join(getattr(folder_paths, "models_dir", ""), "LLM")]
+    return [r for r in roots if r and os.path.isdir(r)]
+
+
+def _gem_list_llm_dirs():
+    """枚举 LLM 搜索路径下含 config.json 的模型目录（大脑 VL 模型下拉）。
+
+    返回**相对 LLM 根目录**的 posix 路径（如 ``huihui-ai/Huihui-...``），
+    便于工作流 JSON 跨机器移植；模型目录可能是 LLM/<组织>/<模型> 两级结构，
+    故递归扫描。解析由 :func:`_resolve_llm_dir` 完成，兼容旧 JSON 里的绝对路径。
+    """
+    rels, seen = [], set()
+    for root in _llm_roots():
+        for dirpath, _names, files in os.walk(root):
+            if "config.json" in files:
+                rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
+                if rel not in seen:
+                    seen.add(rel)
+                    rels.append(rel)
+    return sorted(rels)
+
+
+def _resolve_llm_dir(value):
+    """把 widget 里的相对路径（或旧 JSON 的绝对路径）解析成存在的绝对目录。
+
+    相对路径在全部 LLM 搜索路径下依次拼接查找；找不到返回 None（由调用方回退
+    默认模型目录）。
+    """
+    if not value:
+        return None
+    if os.path.isabs(value):
+        return value if os.path.isdir(value) else None
+    for root in _llm_roots():
+        cand = os.path.join(root, *value.split("/"))
+        if os.path.isdir(cand):
+            return os.path.abspath(cand)
+    return None
+
+
+class GemTextDetectGroups:
+    """
+    文字区检测 + 自然成组（ItsGemTools）。
+
+    RapidOCR det 出框，按字高比例外扩 pad（避免把邻近行包进裁块），再贪心把
+    同栏、纵向相邻、字号相近的单行聚成整组。输出块列表 DETECT_GROUPS 与
+    带框预览图。只做检测分组，识字交给下游大脑节点。
+    """
+
+    _ENGINE = None
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE", {"tooltip": "输入图（RGB）"}),
+                "min_bh": ("INT", {"default": 8, "min": 0, "max": 100, "step": 1,
+                                    "tooltip": "框高下限(px)。调大只保留大字、滤掉条码/标点/噪声小框；调小会纳入碎片小框。漏检小字时调小，误检噪声时调大"}),
+                "max_bh": ("INT", {"default": 0, "min": 0, "max": 400, "step": 1,
+                                    "tooltip": "框高上限(px)。超过该字高的标题/刊头大字不纳入检测：不送大脑识别、不进重绘贴回，保留原图，避免浪费大脑资源并防止大字被整 tile 重绘洗坏；0 表示不限"}),
+                "pad_y_ratio": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 2.0, "step": 0.05,
+                                          "tooltip": "上下外扩 = 比例 × 字高。调大框更松、易把邻近行包进同一块；调小易切掉上下笔画"}),
+                "pad_x_ratio": ("FLOAT", {"default": 0.4, "min": 0.0, "max": 2.0, "step": 0.05,
+                                          "tooltip": "左右外扩 = 比例 × 字高。调大易包进相邻栏文字，调小易切到首尾笔画"}),
+                "pad_cap": ("INT", {"default": 10, "min": 0, "max": 40, "step": 1,
+                                     "tooltip": "外扩像素封顶，防止大字块按比例外扩过多吞进周边内容"}),
+                "x_tol": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 4.0, "step": 0.05,
+                                     "tooltip": "分组左边界容差(×字高)。调大同栏缩进不齐的行也并成一组；调小严格按左对齐才并组。上限 4 倍字高，分块过碎时往大调"}),
+                "y_gap_ratio": ("FLOAT", {"default": 0.6, "min": 0.0, "max": 4.0, "step": 0.05,
+                                           "tooltip": "分组纵向相邻间距(×字高)。调大行距较大的多行也并组；调小只并紧相邻行，行距大的会拆成单块。上限 4 倍字高，分块过碎时往大调"}),
+                "bh_tol": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 2.0, "step": 0.05,
+                                      "tooltip": "分组字号相近容差(×字高)。调大混字号也并组；调小字号差得多的行不并组"}),
+                "draw_preview": ("BOOLEAN", {"default": True, "tooltip": "预览图上绘制检测框，便于核对框选是否合理"}),
+                "group_mode": (["column", "row", "block"], {"default": "column",
+                    "tooltip": "合并粒度。column=旧版同栏纵向贪心精细分块；row=按行聚合成行框(上下各一条)；block=行框基础上把纵向相邻、字号相近的行再并成整块"})
+            }
+        }
+
+    RETURN_TYPES = ("DETECT_GROUPS", "IMAGE")
+    RETURN_NAMES = ("blocks", "preview")
+    FUNCTION = "detect"
+    CATEGORY = "ItsGemTools/text"
+
+    @staticmethod
+    def _engine():
+        if GemTextDetectGroups._ENGINE is None:
+            from rapidocr_onnxruntime import RapidOCR
+            GemTextDetectGroups._ENGINE = RapidOCR()
+        return GemTextDetectGroups._ENGINE
+
+    @staticmethod
+    def _extent(box):
+        xs = [p[0] for p in box]
+        ys = [p[1] for p in box]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    @classmethod
+    def _sort_lines(cls, items, y_tol_ratio=0.6):
+        if not items:
+            return items
+        ann = []
+        for it in items:
+            x0, y0, x1, y1 = cls._extent(it["box"])
+            ann.append((it, (y0 + y1) / 2.0, max(1.0, y1 - y0), x0))
+        ann.sort(key=lambda a: a[1])
+        lines, cur, ref_y, ref_h = [], [], None, None
+        for it, cy, h, x0 in ann:
+            if not cur:
+                cur, ref_y, ref_h = [it], cy, h
+            elif abs(cy - ref_y) <= y_tol_ratio * ref_h:
+                cur.append(it)
+            else:
+                lines.append(cur)
+                cur, ref_y, ref_h = [it], cy, h
+        if cur:
+            lines.append(cur)
+        out = []
+        for line in lines:
+            line.sort(key=lambda it: cls._extent(it["box"])[0])
+            out.extend(line)
+        return out
+
+    @classmethod
+    def _group(cls, items, x_tol, y_gap_ratio, bh_tol):
+        groups = []
+        for it in items:
+            x0, y0, x1, y1 = it["xyxy"]
+            bh = it["bh"]
+            if groups:
+                g = groups[-1]
+                gx0, gy0, gx1, gy1 = g["xyxy"]
+                gbh = g["bh"]
+                same_col = abs(x0 - gx0) <= x_tol * gbh
+                near = (y0 - gy1) <= y_gap_ratio * gbh
+                same_size = abs(bh - gbh) <= bh_tol * gbh
+                if same_col and near and same_size:
+                    g["xyxy"] = [min(gx0, x0), min(gy0, y0), max(gx1, x1), max(gy1, y1)]
+                    g["member_ids"].append(it["id"])
+                    g["bh"] = round(max(gbh, bh), 1)
+                    continue
+            groups.append({"xyxy": [x0, y0, x1, y1], "bh": bh,
+                           "member_ids": [it["id"]], "box": it.get("box")})
+        return groups
+
+    @staticmethod
+    def _bbox(items):
+        x0 = min(i["xyxy"][0] for i in items)
+        y0 = min(i["xyxy"][1] for i in items)
+        x1 = max(i["xyxy"][2] for i in items)
+        y1 = max(i["xyxy"][3] for i in items)
+        bh = round(max(i["bh"] for i in items), 1)
+        return {"xyxy": [x0, y0, x1, y1], "bh": bh,
+                "member_ids": [i["id"] for i in items], "box": items[0].get("box")}
+
+    @classmethod
+    def _cluster_lines(cls, items, y_tol_ratio=0.6):
+        """按纵向中心把同行框聚成一条，返回行列表(每行内按左边界排序)。"""
+        ann = []
+        for it in items:
+            x0, y0, x1, y1 = it["xyxy"]
+            ann.append((it, (y0 + y1) / 2.0, max(1.0, y1 - y0)))
+        ann.sort(key=lambda a: a[1])
+        lines, cur, ref_cy, ref_h = [], [], None, None
+        for it, cy, h in ann:
+            if not cur:
+                cur, ref_cy, ref_h = [it], cy, h
+            elif abs(cy - ref_cy) <= y_tol_ratio * ref_h:
+                cur.append(it)
+            else:
+                lines.append(cur)
+                cur, ref_cy, ref_h = [it], cy, h
+        if cur:
+            lines.append(cur)
+        for line in lines:
+            line.sort(key=lambda i: i["xyxy"][0])
+        return lines
+
+    @classmethod
+    def _row_groups(cls, items, y_tol_ratio=0.6):
+        """按行聚合成行框：同一行所有框包成一个外接框。"""
+        return [cls._bbox(line) for line in cls._cluster_lines(items, y_tol_ratio)]
+
+    @classmethod
+    def _merge_blocks(cls, rows, y_gap_ratio, bh_tol):
+        """相邻行框：纵向相邻且字号相近，再并成整块。"""
+        out = []
+        for g in rows:
+            if out:
+                p = out[-1]
+                py1 = p["xyxy"][3]
+                gy0 = g["xyxy"][1]
+                gbh = p["bh"]
+                near = (gy0 - py1) <= y_gap_ratio * gbh
+                same_size = abs(g["bh"] - p["bh"]) <= bh_tol * gbh
+                if near and same_size:
+                    p["xyxy"] = [min(p["xyxy"][0], g["xyxy"][0]), min(p["xyxy"][1], g["xyxy"][1]),
+                                 max(p["xyxy"][2], g["xyxy"][2]), max(p["xyxy"][3], g["xyxy"][3])]
+                    p["bh"] = round(max(p["bh"], g["bh"]), 1)
+                    p["member_ids"] += g["member_ids"]
+                    continue
+            out.append(dict(g))
+        return out
+
+    def detect(self, image, min_bh, pad_y_ratio, pad_x_ratio, pad_cap,
+               x_tol, y_gap_ratio, bh_tol, draw_preview=True, max_bh=0,
+               group_mode="column"):
+        import cv2
+        from PIL import ImageDraw
+
+        arr = image.detach().to(device="cpu", dtype=torch.float32).numpy()
+        if arr.ndim == 3:
+            arr = arr[None, ...]
+        rgb_u8 = (arr[0] * 255.0).clip(0, 255).astype(np.uint8)
+        bgr = cv2.cvtColor(rgb_u8, cv2.COLOR_RGB2BGR)
+        h0, w0 = bgr.shape[:2]
+
+        result, _ = self._engine()(bgr, use_det=True, use_cls=True, use_rec=False)
+        singles = []
+        if result:
+            for entry in result:
+                box = [[float(x), float(y)] for x, y in entry[0]]
+                x0, y0, x1, y1 = self._extent(box)
+                bh = y1 - y0
+                if bh < min_bh:
+                    continue
+                py = min(pad_cap, bh * pad_y_ratio)
+                px = min(pad_cap, bh * pad_x_ratio)
+                gx0 = max(0, int(round(x0 - px)))
+                gy0 = max(0, int(round(y0 - py)))
+                gx1 = min(w0, int(round(x1 + px)))
+                gy1 = min(h0, int(round(y1 + py)))
+                singles.append({"box": box, "bh": round(bh, 1),
+                                "xyxy": [gx0, gy0, gx1, gy1]})
+
+        for i, s in enumerate(singles):
+            s["id"] = f"b{i:02d}"
+        if group_mode == "row":
+            groups = self._row_groups(singles)
+        elif group_mode == "block":
+            rows = self._row_groups(singles)
+            groups = self._merge_blocks(rows, y_gap_ratio, bh_tol)
+        else:
+            singles = self._sort_lines(singles)
+            groups = self._group(singles, x_tol, y_gap_ratio, bh_tol)
+
+        max_bh = int(max_bh or 0)
+        blocks = []
+        big = 0
+        for i, g in enumerate(groups):
+            # 字高上限：标题/刊头大字整条跳过，不送大脑、不进重绘贴回，保留原图
+            if max_bh > 0 and g["bh"] > max_bh:
+                big += 1
+                continue
+            g["id"] = f"g{i:02d}"
+            g["text"] = ""
+            g["inject"] = ""
+            g["status"] = "detected"
+            # 记录原图宽高，供 PasteBack 按底图实际放大倍率换算贴回坐标，
+            # 避免 ImageScaleBy 改倍率后手动 scale 不同步导致贴偏。
+            g["src_w"] = int(w0)
+            g["src_h"] = int(h0)
+            blocks.append(g)
+        if big:
+            print(f"[GemTextDetectGroups] {big} 个大字块(字高>{max_bh}px)已按字号上限跳过")
+
+        if draw_preview:
+            prev = Image.fromarray(rgb_u8).convert("RGB")
+            d = ImageDraw.Draw(prev)
+            for b in blocks:
+                x0, y0, x1, y1 = b["xyxy"]
+                d.rectangle([x0, y0, x1, y1], outline=(0, 200, 0), width=2)
+            prev_arr = np.array(prev)
+        else:
+            prev_arr = rgb_u8
+        prev_tensor = torch.from_numpy(prev_arr.astype(np.float32) / 255.0).unsqueeze(0)
+        return (blocks, prev_tensor)
+
+
+class GemTextBlockFilter:
+    """
+    文字块拦截过滤（ItsGemTools）。
+
+    把流水线里硬编码的 skip 规则参数化为节点 widget：
+      - 空文本 / 长度不足
+      - 命中存疑关键字（大小写不敏感）
+      - 命中人工存疑块 id（整组任一成员命中即拦）
+      - 问号占比超阈值
+    输入块列表，输出通过 / 被拦两组，并附逐块判定报告。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "blocks": ("DETECT_GROUPS", {"tooltip": "上游检测/大脑阶段产出的块列表"}),
+                "skip_keywords": ("STRING", {
+                    "multiline": True,
+                    "default": "同济导览,生就有,从大病,免费下载,商界,BUSINESS",
+                    "tooltip": "存疑关键字，逗号或换行分隔；识别文本命中任一即拦截（大小写不敏感）。误拦正文时从这里删词，漏拦噪声词时加进去",
+                }),
+                "skip_ids": ("STRING", {
+                    "default": "b13",
+                    "tooltip": "人工存疑块 id（成员 id 或整组 id），逗号或换行分隔；成员命中即整组拦截。按上游报告里的 id 填写",
+                }),
+                "qmark_ratio": ("FLOAT", {
+                    "default": 0.05, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "问号(看不清占位)占文本长度比例上限，超过即拦截。识别越模糊问号越多；调大放行更多存疑块，调小拦得更狠",
+                }),
+                "min_text_len": ("INT", {
+                    "default": 1, "min": 0, "max": 64, "step": 1,
+                    "tooltip": "文本最短长度，短于该值判为空文本拦截。标题/单字被误拦时调 0；标点碎片被放行时调大",
+                }),
+            }
+        }
+
+    RETURN_TYPES = ("DETECT_GROUPS", "DETECT_GROUPS", "STRING")
+    RETURN_NAMES = ("ok_blocks", "skipped_blocks", "report")
+    FUNCTION = "filter"
+    CATEGORY = "ItsGemTools/text"
+
+    @staticmethod
+    def _split_tokens(s):
+        return [t.strip() for t in str(s).replace("\n", ",").split(",") if t.strip()]
+
+    def filter(self, blocks, skip_keywords, skip_ids, qmark_ratio, min_text_len):
+        kws = self._split_tokens(skip_keywords)
+        ids = set(self._split_tokens(skip_ids))
+        qmark_ratio = float(qmark_ratio)
+        min_text_len = int(min_text_len)
+
+        seq = blocks if isinstance(blocks, (list, tuple)) else []
+        ok, skipped, lines = [], [], []
+        for raw in seq:
+            blk = dict(raw) if isinstance(raw, dict) else {"text": str(raw)}
+            text = (blk.get("text") or "").strip()
+            reasons = []
+            if len(text) < min_text_len:
+                reasons.append("empty")
+            low = text.lower()
+            if any(k.lower() in low for k in kws):
+                reasons.append("keyword")
+            if any(m in ids for m in blk.get("member_ids", [])):
+                reasons.append("id")
+            if text and text.count("?") / len(text) > qmark_ratio:
+                reasons.append("qmark")
+            blk["status"] = "skip" if reasons else "brain_ok"
+            blk["skip_reasons"] = reasons
+            (skipped if reasons else ok).append(blk)
+            lines.append(
+                f"{blk.get('id', '?')}\t{blk['status']}\t"
+                f"{','.join(reasons) or '-'}\t{text}"
+            )
+
+        report = "\n".join(lines) if lines else "(no blocks)"
+        return (ok, skipped, report)
+
+
+class GemTextBrainRecognize:
+    """
+    大脑：本地 Qwen3-VL 逐块识字（ItsGemTools）。
+
+    复用 Comfy 基础 CLIP 链路：CLIPLoader 从 text_encoders 目录加载量化 text
+    encoder（与手端 clip_name 同夹、可切换），逐块裁图送 CLIP 自回归转写；可挂
+    GT 覆盖（识别文本含关键词则用核定文本注入手端）。回填块的 text / inject。
+    """
+
+    _CLIPS = {}
+    DEFAULT_CLIP = "qwen3vl_8b_int8_convrot.safetensors"
+    PROMPT = ("这是从印刷封面裁下的一组文字（可能含多行）。逐行逐字转写可见的中文、"
+              "数字和字母，行与行之间用换行分隔；严格区分字母大小写，数字逐位转写；"
+              "看不清就用 ? 占位，不要根据常识或常见词补全；只输出文字本身，不要解释。")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        encoders = _gem_list_text_encoders()
+        default_clip = cls.DEFAULT_CLIP if cls.DEFAULT_CLIP in encoders else (
+            encoders[0] if encoders else cls.DEFAULT_CLIP)
+        return {
+            "required": {
+                "image": ("IMAGE", {"tooltip": "源图（与 detect 同一张）"}),
+                "blocks": ("DETECT_GROUPS", {"tooltip": "detect 产出的块列表"}),
+                "clip_name": (encoders, {
+                    "default": default_clip,
+                    "tooltip": "识字 text encoder（text_encoders 目录，与手端 clip_name 同夹，可切换）；仅在未连线 CLIP 输入时生效"}),
+                "prompt": ("STRING", {
+                    "multiline": True, "default": cls.PROMPT,
+                    "tooltip": "识字提示词；按块图逐字转写要求填写，可更换"}),
+                "gt_map": ("STRING", {
+                    "multiline": True, "default": "",
+                    "tooltip": "GT 纠错表，每行 `关键词=>正确文本`；识别文本含关键词则用核定文本覆盖注入手端。留空不纠错"}),
+                "max_new_tokens": ("INT", {
+                    "default": 128, "min": 16, "max": 512,
+                    "tooltip": "单块识字最大输出 token；多行目录块可调大，单行标题用默认即可"}),
+            },
+            "optional": {
+                "clip": ("CLIP", {"tooltip": "可选：外部 CLIPLoader 输出；连线后以此为准，忽略 clip_name"}),
+            },
+        }
+
+    RETURN_TYPES = ("DETECT_GROUPS", "STRING")
+    RETURN_NAMES = ("blocks", "report")
+    FUNCTION = "recognize"
+    CATEGORY = "ItsGemTools/text"
+
+    @classmethod
+    def _get_clip(cls, clip_name):
+        key = str(clip_name)
+        if key not in cls._CLIPS:
+            mappings = getattr(sys.modules.get("nodes"), "NODE_CLASS_MAPPINGS", None)
+            if not isinstance(mappings, dict) or "CLIPLoader" not in mappings:
+                raise RuntimeError("大脑识字缺少 Comfy 内置 CLIPLoader 节点")
+            cls._CLIPS[key] = mappings["CLIPLoader"]().load_clip(
+                clip_name, "qwen_image", "default")[0]
+        return cls._CLIPS[key]
+
+    @staticmethod
+    def _parse_gt(s):
+        out = []
+        for line in str(s).splitlines():
+            line = line.strip()
+            if "=>" in line:
+                kw, gt = line.split("=>", 1)
+                if kw.strip():
+                    out.append((kw.strip(), gt.strip()))
+        return out
+
+    @staticmethod
+    def _decode_generated(clip, ids):
+        text = clip.decode(ids)
+        if "</think>" in text:  # 剥离 reasoning（与核心 TextGenerate 节点一致）
+            text = text.split("</think>", 1)[1]
+        return text.strip()
+
+    def recognize(self, image, blocks, clip_name, prompt, gt_map, max_new_tokens, clip=None):
+        if clip is None:
+            clip = self._get_clip(clip_name)
+        pil_full = Image.fromarray(
+            (image[0].detach().cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8))
+        gts = self._parse_gt(gt_map)
+
+        out_blocks, lines = [], []
+        for raw in blocks:
+            blk = dict(raw)
+            x0, y0, x1, y1 = blk["xyxy"]
+            crop = pil_full.crop((x0, y0, x1, y1))
+            crop_t = torch.from_numpy(
+                np.array(crop).astype(np.float32) / 255.0).unsqueeze(0)
+            try:
+                tokens = clip.tokenize(
+                    prompt, image=crop_t, skip_template=False, system_prompt="")
+                ids = clip.generate(
+                    tokens, do_sample=False, max_length=max_new_tokens,
+                    temperature=0.3, top_k=64, top_p=0.95, min_p=0.05,
+                    repetition_penalty=1.05, seed=None,
+                    presence_penalty=0.0, mtp=True)
+                ans = self._decode_generated(clip, ids)
+                ans = ans.strip().strip('"').strip("“”").strip()
+                gt = next((g for kw, g in gts if kw in ans), None)
+                blk["text"] = ans
+                blk["inject"] = gt if gt else ans
+                blk["status"] = "brain_ok"
+                lines.append(f"{blk.get('id', '?')}\t{ans}\t=> {blk['inject']}")
+            except Exception as e:
+                blk["text"] = blk.get("text", "")
+                blk["inject"] = blk.get("inject", "")
+                blk["status"] = "brain_failed"
+                blk["error"] = str(e)
+                lines.append(f"{blk.get('id', '?')}\tbrain_failed\t{e}")
+            out_blocks.append(blk)
+
+        return (out_blocks, "\n".join(lines) or "(no blocks)")
+
+
+class GemTextRestoreBatch:
+    """
+    手端：逐块 QwenImage2.1 重绘（ItsGemTools）。
+
+    节点内循环切块放大，调用隔离管线 QwenRestorePipeline 在内存里流转现成 Comfy
+    采样链；**不二次提交子工作流**，无后端调度死锁。修好块白底补零对齐成 batch。
+    """
+
+    _PIPELINE = None
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE", {"tooltip": "源图（与 detect/brain 同一张）"}),
+                "blocks": ("DETECT_GROUPS", {"tooltip": "brain 回填 inject 后的块列表"}),
+                "scale": ("INT", {"default": 2, "min": 1, "max": 8,
+                                  "tooltip": "切块先放大的倍数；字越小放大越多，过大易出伪影"}),
+                "seed": ("INT", {"default": 42, "tooltip": "随机种子；固定种子便于复现同一张重绘结果"}),
+                "steps": ("INT", {"default": 30, "min": 1, "max": 100,
+                                  "tooltip": "采样步数；偏低字形不到位，偏高耗时且易过拟合，30 为文字修复稳妥值"}),
+                "cfg": ("FLOAT", {"default": 3.0, "min": 1.0, "max": 10.0,
+                                  "tooltip": "提示词遵从度；越高越贴目标文字，过高笔画越硬越容易板结"}),
+                "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0,
+                                      "tooltip": "重绘强度；1.0 完全按目标文字重绘，调低会保留原图残笔（文字修复一般保持 1.0）"}),
+                "sampler_name": (["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_sde",
+                                  "ddim", "uni_pc"], {"default": "euler",
+                                  "tooltip": "采样器；文字修复默认 euler，改其它采样器需自行对照字形"}),
+                "scheduler": (["simple", "normal", "karras", "sgm_uniform", "beta",
+                               "linear", "exponential", "cosine"], {"default": "simple",
+                               "tooltip": "采样调度器；默认 simple，与锁定口径一致"}),
+                "tile_megapixels": ("FLOAT", {"default": 3.6, "min": 0.5, "max": 8.0, "step": 0.1,
+                                              "tooltip": "单切块像素上限（百万像素）；块越大切块越少、接缝越少，但显存占用越高"}),
+                "overlap": ("INT", {"default": 256, "min": 0, "max": 512, "step": 16,
+                                     "tooltip": "相邻切块重叠 px；重叠越大接缝越弱，显存/耗时略增"}),
+                "keep_colors": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05,
+                                          "tooltip": "缝合时保留原块色彩的强度；1.0 完全保留底色，调低更贴近重绘结果"}),
+                "max_align_shift": ("INT", {"default": 64, "min": 0, "max": 256, "step": 1,
+                                            "tooltip": "切块缝合配准允许的最大平移 px；对齐错位调大，正常保持 64"}),
+                "clip_name": (_gem_list_text_encoders(), {
+                    "default": CLIP_NAME,
+                    "tooltip": "文本编码器(CLIP)下拉；仅在未连线 CLIP 输入时生效。画布上也可直接接 CLIPLoader 节点"}),
+                "unet_name": (_gem_list_diffusion(), {
+                    "default": UNET_NAME,
+                    "tooltip": "底座扩散模型(UNET/MODEL)下拉；仅在未连线 MODEL 输入时生效"}),
+                "vae_name": (_gem_list_vae(), {
+                    "default": VAE_NAME,
+                    "tooltip": "VAE 下拉；仅在未连线 VAE 输入时生效"}),
+                "positive_prompt": ("STRING", {
+                    "multiline": True, "default": CAPTION_STRONG,
+                    "tooltip": "正向提示词（风格/恢复要求）；留空用内置默认。注入的目标文字由管线自动拼在末尾，无需手写具体文字"}),
+                "instruction": ("STRING", {
+                    "multiline": True, "default": ALIGN_INSTRUCTION,
+                    "tooltip": "逐字对齐指令（追加在正向词末尾）；{inject} 占位替换为大脑识出的目标文字。留空则不追加该指令；擦除背景字时可改成纯擦除口径（如 Erase every character, leave only clean background.）且不带 {inject}"}),
+                "negative_prompt": ("STRING", {
+                    "multiline": True, "default": NEGATIVE,
+                    "tooltip": "负向提示词；留空用内置默认。用于压制糊字/重影/错字/背景串色"}),
+            },
+            "optional": {
+                "clip": ("CLIP", {"tooltip": "可选：外部 CLIPLoader 输出；连线后以此为准，忽略 clip_name"}),
+                "model": ("MODEL", {"tooltip": "可选：外部 UNETLoader 输出；连线后以此为准，忽略 unet_name"}),
+                "vae": ("VAE", {"tooltip": "可选：外部 VAELoader 输出；连线后以此为准，忽略 vae_name"}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "DETECT_GROUPS", "STRING")
+    RETURN_NAMES = ("restored", "blocks", "report")
+    FUNCTION = "restore_batch"
+    CATEGORY = "ItsGemTools/text"
+
+    @staticmethod
+    def _pipeline():
+        if GemTextRestoreBatch._PIPELINE is None:
+            GemTextRestoreBatch._PIPELINE = QwenRestorePipeline()
+        return GemTextRestoreBatch._PIPELINE
+
+    def restore_batch(self, image, blocks, scale, seed, steps, cfg, denoise,
+                      sampler_name="euler", scheduler="simple",
+                      tile_megapixels=3.6, overlap=256,
+                      keep_colors=1.0, max_align_shift=64,
+                      clip_name=CLIP_NAME, unet_name=UNET_NAME, vae_name=VAE_NAME,
+                      positive_prompt=CAPTION_STRONG, instruction=ALIGN_INSTRUCTION,
+                      negative_prompt=NEGATIVE,
+                      clip=None, model=None, vae=None):
+        pil_full = Image.fromarray(
+            (image[0].detach().cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8))
+        pipe = self._pipeline()
+        pipe.configure(clip=clip, model=model, vae=vae,
+                        clip_name=clip_name, unet_name=unet_name, vae_name=vae_name)
+        restored, out_blocks, lines = [], [], []
+
+        for raw in blocks:
+            blk = dict(raw)
+            bid = blk.get("id", "x")
+            if blk.get("status") == "skip":
+                out_blocks.append(blk)
+                lines.append(f"{bid}\tskip")
+                continue
+            x0, y0, x1, y1 = blk["xyxy"]
+            crop = pil_full.crop((x0, y0, x1, y1))
+            big = crop.resize((crop.width * scale, crop.height * scale), Image.LANCZOS)
+            block_t = torch.from_numpy(
+                np.array(big).astype(np.float32) / 255.0).unsqueeze(0)
+            inject = blk.get("inject") or blk.get("text") or ""
+            try:
+                out_t = pipe.restore_block(
+                    block_t, inject, seed, steps, cfg, denoise,
+                    sampler_name=sampler_name, scheduler=scheduler,
+                    tile_megapixels=tile_megapixels, overlap=overlap,
+                    keep_colors=keep_colors, max_align_shift=max_align_shift,
+                    negative=negative_prompt, positive=positive_prompt,
+                    instruction=instruction)
+                out_r = out_t[0].detach().cpu()
+                restored.append(out_r)
+                # 记录修好块真实内容尺寸；batch 补零对齐后内容位于左上，
+                # 下游 PasteBack 据此裁掉白底 pad，避免把 pad 一起压进目标框。
+                blk["restored_h"] = int(out_r.shape[0])
+                blk["restored_w"] = int(out_r.shape[1])
+                blk["status"] = "restored"
+                lines.append(f"{bid}\trestored\t{inject}")
+            except Exception as e:
+                blk["status"] = "restore_failed"
+                blk["error"] = str(e)
+                lines.append(f"{bid}\tfail\t{e}")
+            out_blocks.append(blk)
+
+        if restored:
+            mh = max(r.shape[0] for r in restored)
+            mw = max(r.shape[1] for r in restored)
+            batch = []
+            for r in restored:
+                canvas = np.ones((mh, mw, 3), dtype=np.float32)
+                h, w = r.shape[:2]
+                canvas[:h, :w] = r
+                batch.append(canvas)
+            restored_t = torch.from_numpy(np.stack(batch, axis=0))
+        else:
+            restored_t = torch.zeros((1, 8, 8, 3), dtype=torch.float32)
+        return (restored_t, out_blocks, "\n".join(lines) or "(no blocks)")
+
+
+class GemTextPasteBack:
+    """
+    把修好的块按坐标掩膜贴回放大底图（ItsGemTools）。
+
+    双向自适应笔画掩膜：深底白字取亮类、白底黑字取暗类，背景留底图；
+    矩形边缘羽化。restored batch 顺序对齐 blocks 中待贴回（非 skip）的块。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "base_image": ("IMAGE", {"tooltip": "放大底图（单张）"}),
+                "restored": ("IMAGE", {"tooltip": "重绘块 batch，顺序对齐待贴回块"}),
+                "blocks": ("DETECT_GROUPS", {"tooltip": "detect/filter 产出的块列表"}),
+                "scale": ("INT", {"default": 2, "min": 1, "max": 8, "tooltip": "兜底放大倍数；接入原图(original_image)或块自带原图尺寸时，按底图实际倍率自动换算，此值仅在两者都缺省时使用"}),
+                "feather": ("INT", {"default": 3, "min": 0, "max": 32, "tooltip": "矩形边缘羽化 px（放大坐标系）。贴回边缘有硬边/叠影时调大，笔画发虚时调小；0 为硬边"}),
+                "use_text_mask": ("BOOLEAN", {"default": True, "tooltip": "只贴笔画、背景留底图；关闭则把整块矩形羽化贴回。彩色/复杂背景建议开，纯底小字可关对照"}),
+            },
+            "optional": {
+                "original_image": ("IMAGE", {"tooltip": "可选：检测/识别用的原图。接入后按底图与原图的实际宽高比自动换算贴回坐标，ImageScaleBy 改 3/4 倍也不用手动同步 scale"}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("composite",)
+    FUNCTION = "paste_back"
+    CATEGORY = "ItsGemTools/text"
+
+    @staticmethod
+    def _feather_mask(w, h, feather):
+        if feather <= 0:
+            return np.ones((h, w), dtype=np.float32)
+        fx = min(feather, w // 2 - 1) if w > 2 else 0
+        fy = min(feather, h // 2 - 1) if h > 2 else 0
+        mask = np.ones((h, w), dtype=np.float32)
+        if fx > 0:
+            ramp = np.linspace(0, 1, fx)
+            mask[:, :fx] *= ramp[None, :]
+            mask[:, w - fx:] *= ramp[::-1][None, :]
+        if fy > 0:
+            ramp = np.linspace(0, 1, fy)
+            mask[:fy, :] *= ramp[:, None]
+            mask[h - fy:, :] *= ramp[::-1][:, None]
+        return mask
+
+    @staticmethod
+    def _text_mask(blk_arr):
+        import cv2
+        gray = (0.299 * blk_arr[..., 0] + 0.587 * blk_arr[..., 1]
+                + 0.114 * blk_arr[..., 2])
+        g8 = np.clip(gray, 0, 255).astype(np.uint8)
+        _, binm = cv2.threshold(g8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        bright_ratio = float((binm > 0).mean())
+        if bright_ratio > 0.5:
+            text = (binm == 0).astype(np.float32)
+        else:
+            text = (binm > 0).astype(np.float32)
+        text = cv2.morphologyEx(text, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
+        text = cv2.GaussianBlur(text, (3, 3), 0)
+        return text
+
+    def paste_back(self, base_image, restored, blocks, scale=2, feather=3,
+                   use_text_mask=True, original_image=None):
+        # Comfy 张量为 0~1；节点内统一到 0~255 浮点混合（与脚本口径一致）
+        base_arr = base_image[0].detach().cpu().numpy().astype(np.float32) * 255.0
+        base_h, base_w = base_arr.shape[:2]
+
+        # 自适应底图倍率：优先原图连线，其次块自带的原图尺寸，最后才用手动 scale 兜底。
+        # ImageScaleBy 改 3/4 倍时，坐标按底图与原图的实际宽高比换算，无需手动同步 scale。
+        orig_w = orig_h = None
+        if original_image is not None:
+            oh, ow = original_image[0].detach().cpu().shape[:2]
+            orig_w, orig_h = int(ow), int(oh)
+        else:
+            for _b in blocks:
+                if _b.get("src_w") and _b.get("src_h"):
+                    orig_w, orig_h = int(_b["src_w"]), int(_b["src_h"])
+                    break
+        if orig_w and orig_h and orig_w > 0 and orig_h > 0:
+            sx = base_w / float(orig_w)
+            sy = base_h / float(orig_h)
+            eff_scale = (sx + sy) / 2.0
+            ratio_src = f"原图 {orig_w}x{orig_h} → 底图 {base_w}x{base_h} (sx={sx:.3f}, sy={sy:.3f})"
+        else:
+            sx = sy = eff_scale = float(scale)
+            ratio_src = f"手动 scale={scale}（未接入原图/块无原图尺寸）"
+
+        # 底图坐标系校验：贴回坐标 = 原图框 ×实际倍率。若底图被压成固定尺寸/倍率
+        # 与倍率不一致，框会越界被截断，表现为块贴偏/半透明错位；这里提前告警。
+        _max_x = _max_y = 0
+        for _b in blocks:
+            if _b.get("status") != "restored":
+                continue
+            _x0, _y0, _x1, _y1 = _b["xyxy"]
+            _max_x = max(_max_x, int(round(_x1 * sx)))
+            _max_y = max(_max_y, int(round(_y1 * sy)))
+        if _max_x > base_w or _max_y > base_h:
+            print(f"[GemTextPasteBack] 底图 {base_w}x{base_h} 小于贴回坐标范围 "
+                  f"{_max_x}x{_max_y}（{ratio_src}）：底图倍率/尺寸与原图不一致，"
+                  f"块会被截断贴偏。请确认底图由原图等比放大而来。")
+
+        def _to_uint8_list(restored):
+            if isinstance(restored, (list, tuple)):
+                arr = [np.asarray(r.detach().cpu() if hasattr(r, "detach") else r) for r in restored]
+            else:
+                t = restored.detach().cpu().numpy()
+                arr = [t[i] for i in range(t.shape[0])] if t.ndim == 4 else [t]
+            out = []
+            for a in arr:
+                if a.ndim == 4:
+                    a = a[0]
+                if a.dtype != np.uint8:
+                    a = (a * 255.0).clip(0, 255)
+                out.append(a.astype(np.uint8))
+            return out
+
+        R = _to_uint8_list(restored)
+
+        r_idx = 0
+        for blk in blocks:
+            # 只贴回成功重绘(restored)的块；skip / restore_failed / 被字号上限
+            # 跳过的块不进重绘 batch，不能消耗 R 索引，否则后续块整体错位贴偏。
+            if blk.get("status") != "restored":
+                continue
+            if r_idx >= len(R):
+                break
+            x0, y0, x1, y1 = blk["xyxy"]
+            base_h, base_w = base_arr.shape[:2]
+            # 坐标 clamp 到底图边界：底图倍率按自适应 sx/sy 换算；若底图尺寸/倍率
+            # 不一致导致框越界，按可见区裁剪，避免 region 被 numpy 截断而
+            # 块/mask 仍按原宽高计算，触发形状广播错误。
+            tx0 = max(0, min(int(round(x0 * sx)), base_w - 1))
+            ty0 = max(0, min(int(round(y0 * sy)), base_h - 1))
+            tx1 = max(tx0 + 1, min(int(round(x1 * sx)), base_w))
+            ty1 = max(ty0 + 1, min(int(round(y1 * sy)), base_h))
+            tw, th = tx1 - tx0, ty1 - ty0
+            tile = R[r_idx]
+            # 裁掉 RestoreBatch 补零对齐的白底 pad：只取记录的真实内容区，
+            # 避免把白底一起 resize 进目标框导致内容压缩错位。
+            rh, rw = blk.get("restored_h"), blk.get("restored_w")
+            if rh and rw:
+                tile = tile[:int(rh), :int(rw)]
+            blk_pil = Image.fromarray(tile)
+            r_idx += 1
+            blk_pil = blk_pil.resize((tw, th), Image.LANCZOS)
+            blk_arr = np.asarray(blk_pil).astype(np.float32)
+
+            mask = self._feather_mask(tw, th, feather)
+            if use_text_mask:
+                mask = mask * self._text_mask(blk_arr)
+            mask = mask[..., None]
+
+            region = base_arr[ty0:ty1, tx0:tx1]
+            region[:] = blk_arr * mask + region * (1 - mask)
+            base_arr[ty0:ty1, tx0:tx1] = region
+
+        out = np.clip(base_arr, 0, 255).astype(np.uint8)
+        composite = torch.from_numpy(out.astype(np.float32) / 255.0).unsqueeze(0)
+        return (composite,)
+
+
+class GemShowText:
+    """文本显示节点（ItsGemTools）。
+
+    接收上游 STRING（报告/识别文本等），在节点本体上展示；文本原样向下游透传。
+    不依赖 pysssss / AusBoss 等第三方显示节点。后端把文本放进 ui 负载，
+    前端扩展 itsgemtools_show_text.js 负责渲染到节点上。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "text": ("STRING", {
+                    "forceInput": True,
+                    "tooltip": "要显示的文本，接上游 STRING 输出；也可手填。文本原样透传到下游",
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("text",)
+    FUNCTION = "show"
+    OUTPUT_NODE = True
+    CATEGORY = "ItsGemTools/text"
+
+    def show(self, text):
+        shown = text if isinstance(text, str) else str(text)
+        return {"ui": {"text": [shown]}, "result": (shown,)}
+
+
 NODE_CLASS_MAPPINGS = {
     "maskfeather": MaskFeather,
     "SetImageAlpha": SetImageAlpha,
@@ -3236,8 +4137,26 @@ NODE_CLASS_MAPPINGS = {
     "GemColorCalibrator": GemColorCalibrator,
     # Image Crop By Mask：复刻自 KJNodes ImageCropByMask（独立命名，kjnodes 原版零改动）
     "GemImageCropByMask": GemImageCropByMask,
+    # 文字区检测 + 自然成组
+    "GemTextDetectGroups": GemTextDetectGroups,
+    # 大脑：8B VL 逐块识字 + GT 覆盖
+    "GemTextBrainRecognize": GemTextBrainRecognize,
+    # 手端：逐块 QwenImage2.1 重绘批处理
+    "GemTextRestoreBatch": GemTextRestoreBatch,
+    # 文字块拦截过滤：skip 阈值参数化为 widget
+    "GemTextBlockFilter": GemTextBlockFilter,
+    # 修好块按坐标掩膜贴回放大底图
+    "GemTextPasteBack": GemTextPasteBack,
+    # 自有文本显示节点（替代 ShowText|pysssss）
+    "GemShowText": GemShowText,
+    # 批量出图 / Image Folder：复刻自 AusBoss AUSBOSS_NODES_ImageFolder（独立命名，AusBoss 原版零改动）
+    "GemImageFolder": GemImageFolder,
+    # 保存节点：复刻自 ComfyUI 内置 SaveImageAdvanced，追加 JPG（默认 JPG、视觉无损下体积最小）
+    "GemSaveImageAdvanced": GemSaveImageAdvanced,
     # 前端纯标注节点：后端空实现，保证后端认识该类型（不报 missing node）
     "Label (ItsGemTools)": GemLabel,
+    # 前端纯虚拟节点：按组快速旁路（同 Label 的处理，后端只需认识类型）
+    "Fast Groups Bypasser (ItsGemTools)": GemFastGroupsBypasser,
     # 旧名称保留映射（菜单中隐藏），保证历史保存的工作流仍能加载。
     "SAM3DistanceFeather": MaskFeather,
 }
@@ -3259,7 +4178,16 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "GemTiledUpscaleStitch": "Tiled Upscale Stitch (ItsGemTools)",
     "GemColorCalibrator": "Color Calibrator (ItsGemTools)",
     "GemImageCropByMask": "Image Crop By Mask (ItsGemTools)",
+    "GemTextDetectGroups": "Text Detect Groups (ItsGemTools)",
+    "GemTextBrainRecognize": "Text Brain Recognize (ItsGemTools)",
+    "GemTextRestoreBatch": "Text Restore Batch (ItsGemTools)",
+    "GemTextBlockFilter": "Text Block Filter (ItsGemTools)",
+    "GemTextPasteBack": "Text Paste Back (ItsGemTools)",
+    "GemShowText": "Show Text (ItsGemTools)",
+    "GemImageFolder": "Image Folder (ItsGemTools)",
+    "GemSaveImageAdvanced": "Save Image (Advanced+JPG) (ItsGemTools)",
     "Label (ItsGemTools)": "Label (ItsGemTools)",
+    "Fast Groups Bypasser (ItsGemTools)": "Fast Groups Bypasser (ItsGemTools)",
     # 空字符串让旧节点名在右键菜单中隐藏，仅作为工作流兼容别名。
     "SAM3DistanceFeather": "",
 }

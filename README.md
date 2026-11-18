@@ -24,6 +24,7 @@
 | **Tiled Upscale / Tiled Upscale Stitch** | 分块放大（Qwen 编辑链） | 复刻 AusBoss 切块/拼回逻辑；Stitch 端新增 FFT 相位相关亚像素几何配准，消除 QwenImage 2.1 + 自训 LoRA 重绘导致的接缝偏移 / 重影；32 倍数对齐，纯 torch 零额外依赖 |
 | **Color Calibrator** | 双图颜色校准 | 复刻 BlueBox `ColorCalibratorBlueBox`：自动对比两图检测变化区 → 遮罩外逐通道仿射校色 → 锚点对比度回压 → 遮罩外低频回贴（高频保留）或原图回贴；输出 image / mask / changed_ratio |
 | **Image Crop By Mask** | 按遮罩自动裁切 | 复刻 KJNodes `ImageCropByMask`：按 mask 非零区外接框裁图，零 widget、与原版逐像素一致；空遮罩 / 混合尺寸 / 遮罩分辨率不符三条原版会崩的路径改为安全降级 |
+| **Image Folder（批量出图）** | 相册式批量取图 | 复刻 AusBoss `Image Folder 🆎`：瓦片相册里点选照片（单击勾选 / Shift 段选 / All / None / Add / ↻）、`one per run` 每跑一次出一张并自动推进、input/output 目录树 Browse、外部文件夹一键复制进 input；9 个 widget / 5 个输出与原版一一对应，工作流可原位替换 |
 | **Set / Get Image Variable** | 跨节点传递图片 | 全局图像变量：Set 写入（image 透传）、Get 按 key 读取，大型工作流免拉长线 |
 | **Label** | 工作流注释 / 分区说明 | 浮动文字标签：双击就地改文案（回车或点外部生效），字号 / 字体 / 字色 / 对齐 / 背景（含 8 位 HEX 半透明）/ 内边距 / 圆角 / 角度全可调，支持 `\n` 换行 |
 
@@ -52,17 +53,20 @@ git clone https://github.com/<你的GitHub名>/ComfyUI-ItsGemTools.git
 ComfyUI/custom_nodes/ComfyUI-ItsGemTools/
 ├── __init__.py
 ├── nodes.py
+├── itsgem_image_folder.py        # 批量出图（文件夹）后端：节点 + 三条 /itsgemtools/image_folder 路由
 └── web/extensions/
     ├── itsgemtools_auto_refresh.js
     ├── itsgemtools_compare.js
     ├── itsgemtools_appearance.js
     ├── itsgemtools_i18n.js
-    └── itsgemtools_label.js
+    ├── itsgemtools_label.js
+    ├── itsgemtools_setget.js
+    └── itsgemtools_image_folder.js
 ```
 
 **然后重启 ComfyUI**（前端扩展需重启加载；若改过扩展文件建议浏览器 Ctrl+Shift+R 硬刷新）。
 
-在节点搜索框搜索：`Adjust Color & Effect`、`Skin Beauty`、`Layer Composite`、`maskfeather`、`Before/After Preview`、`Image Compare A/B`、`Label`、`Color Calibrator`。
+在节点搜索框搜索：`Adjust Color & Effect`、`Skin Beauty`、`Layer Composite`、`maskfeather`、`Before/After Preview`、`Image Compare A/B`、`Label`、`Color Calibrator`、`Image Folder`。
 
 ## 快速上手
 
@@ -96,6 +100,13 @@ Load Image(背景) + Load Image(透明PNG前景) → Layer Composite → Preview
 Load Image ─┬─> Adjust Color & Effect ─┬─> after ─┐
             └─> before ────────────────┴─> Before/After Preview -> Preview Image
 ```
+
+### 5. 批量出图（一文件夹照片，每跑一张）
+```
+Image Folder（source=input、folder=case、勾好 7 张、run=one per run、after_run=next）
+ → 你的重绘 / 裁剪链 → Save Image（文件名前缀带 %index%）
+```
+面板上点照片勾选（Shift 单击连选一段），`A` 全选 / `N` 全不选；想用别的文件夹点 `Browse`，想把硬盘上的图库搬进来就 `Add → 整个文件夹`。
 
 ## 节点详解
 
@@ -161,6 +172,17 @@ Set Image Variable（key=my_image，image=任意 IMAGE）→ 串在流程中
 - **固定**：右键 → Pin 把标签钉在画布上并让点击穿透，再次右键取消
 - **命名**：`Label (ItsGemTools)` 带品牌后缀，与 rgthree 等第三方 `Label (…)` 互不冲突、不会被合并覆盖；搜索框输入 `label` 即可前缀命中
 
+### Fast Groups Bypasser（节点键 `Fast Groups Bypasser (ItsGemTools)`）
+复刻 rgthree-comfy 的 `Fast Groups Bypasser (rgthree)`，改成**本包淡紫主题**、文案与行为按自有习惯重写；**纯前端虚拟节点**（后端仅注册空实现让后端认识类型，不参与任何执行）：
+- **它和组是怎么建立关系的（重点）**：**不靠连线**。节点定期（450ms）枚举当前工作流全部分组，对每个组判断「**哪些节点的中心点落在该组的矩形框内**」，这些节点就是这个组的成员。所以把节点拖进组框 = 归这个开关管，拖出去 = 自动不管；组改名、拖动、新建、删除都会自动跟上，无需刷新
+- **一行 = 一个组**：行左侧的小色条就是该组在画布上的边框颜色；右侧显示 `启用 / 关闭 / 部分关闭` 与圆点，**状态是从组内节点的真实 `mode` 读回来的**——你在别处手动关掉其中一个节点，这行立刻变「部分关闭」
+- **点一下**：整组在 `启用(0)` ↔ `关闭(4，即 ComfyUI 的 Bypass/旁路)` 之间翻转（存量大组内只要还有启用节点就整体关闭，否则整体启用）
+- **右侧箭头**：把画布定位并缩放到该组
+- **右键 → Properties**：`matchTitle`（只保留标题匹配的组，支持正则，如 `放大|缩小`）、`matchColors`（只保留指定颜色的组，逗号分隔，支持颜色名与 `#rrggbb`）、`showAllGraphs`（是否含子图里的组）、`sort`（position / alphanumeric / custom alphabet）、`customSortAlphabet`（自定义排序字母表）、`toggleRestriction`（`max one` / `always one`，单选式分组）
+- **右键菜单**：全部关闭 / 全部启用 / 全部翻转 / 重新扫描分组；节点上按 `?` 或右键 Help 看内置说明
+- **命名隔离**：带 `(ItsGemTools)` 后缀，与 rgthree 原节点**互不冲突、可同画布共存**；分类 `ItsGemTools`，已登记进 `itsgemtools_appearance.js` 的 `NODE_TYPES`
+- **一处主动改进**：组内的 `Note` / `MarkdownNote` / `Label (ItsGemTools)` 与节点自身**不参与开关切换**——否则整组关闭会把标签和备注一起变灰看不见
+
 ### Tiled Upscale / Tiled Upscale Stitch（节点键 `GemTiledUpscale` / `GemTiledUpscaleStitch`）
 复刻自 ComfyUI-AusBoss 的 `Tiled Upscale 🆎` / `Tiled Upscale Stitch 🆎`（切块 / 拼回逻辑与原版一致），并在 **Stitch 端新增 tile 级亚像素几何配准**，专治 QwenImage 2.1 + 自训 LoRA 重绘导致的接缝偏移 / 重影：
 - **用法**：`Tiled Upscale (ItsGemTools)` 切 tile（megapixels / tile_megapixels / overlap / multiple / max_growth / enforce_qwen_tile_limit，32 倍数对齐）→ 采样器逐 tile 重绘 → `Tiled Upscale Stitch (ItsGemTools)` 拼回。与原 AusBoss 节点**成对替换**（stitcher 互相不兼容）。
@@ -202,6 +224,20 @@ Set Image Variable（key=my_image，image=任意 IMAGE）→ 串在流程中
   - **mask 分辨率与图不一致**：原版会越界索引出错；本节点用**最近邻**把遮罩缩放到图尺寸后继续（硬边不插值，避免糊边扩框）。
 - **兼容性**：只依赖 `torch`，ComfyUI 自带，无新增依赖。
 
+### Image Folder（节点键 `GemImageFolder`，显示名 Image Folder (ItsGemTools)）
+复刻 AusBoss `Image Folder 🆎`（ComfyUI-AusBoss-main / `nodes/node_image_folder.py` + `nodes/_image_folder_helpers.py` + `js/`）——**后端算法与前端交互按原版实现，代码在本包内重写；AusBoss 原版零改动，两节点键名/显示名互不冲突、可同画布共存**。典型用途：一次挑好一文件夹照片，`one per run` 每跑一次自动换下一张，配合重绘 / 裁剪链批量出图。
+
+- **9 个 widget 与原版同样顺序、同样选项**：`source`（input / output）→ `folder`（空 = 该根目录本身）→ `subfolders` → `sort`（name / newest first / oldest first）→ `pictures`（勾选结果的 JSON 数组，空 = 全选）→ `run`（all in one run / one per run）→ `position`（第几张，从 1 计）→ `after_run`（next / stay / random）→ `at_the_end`（stop the run / start over）。tooltip 原文照搬。
+- **5 个输出与原版一致**：`image` / `mask` / `filename` / `index` / `count`，前四个 `OUTPUT_IS_LIST=True`、`count` 为单值，因此下游按列表展开的行为与原版逐条相同。
+- **相册面板**（节点上直接铺满高度，不用滚轮翻页）：瓦片墙 + IntersectionObserver 懒加载缩略图；**单击勾选**、**Shift 单击段选**，顶部计数条显示 `X of Y picked` / `next N` / `all done`；`All` / `None` / `Add` / `↻` 一键操作；`one per run` 模式下当前那张带白色 ring，双击可直接定位到 `Picture`。
+- **Browse 弹窗**只看 input / output 两棵目录树，选完写回 `folder`；**Add 菜单**可加单张图片或整个文件夹——外部文件夹通过浏览器 `/upload/image` 复制进 input（三并发、超过 3000 张 / 1GB 先弹确认框、同名覆盖写），也支持直接把文件夹 / 图片拖进节点。
+- **`after_run` 在编辑器侧生效**：每次排队（`afterQueued`）按 next / stay / random 推进 `position`，一次运行本身只按 `position` 取图；这正是原版"排 10 次自动走完 10 张"的语义。`at_the_end=stop the run` 时越界会带消息停下，`start over` 则回到第一张继续。
+- **图片读取**：`load_picture` 与原版逐像素一致（RGBA 拆出 mask、无透明区给 64×64 全零 mask 当"没有遮罩"），`filename` 只给文件名、`index` 从 1 计。
+- **位姿可继承**：`onConfigure` 会恢复工作流里存的 folder 与勾选，`onExecuted` 记下已跑完的项与文件名提示行，删节点时自动清掉缩略图缓存与请求。
+- **命名隔离**：路由 `/itsgemtools/image_folder/{folders,list,thumb}`（面板靠这三条取目录、取列表、取缩略图）、UI key `itsgemtools_image_folder`、报错前缀 `Image Folder (ItsGemTools):`、分类 `ItsGemTools/image`；前端主题用本包淡紫 `#c4a6ff`，文案跟随本包中英切换（`itsgem-lang-change`），本节点已登记进 `itsgemtools_appearance.js` 的 `NODE_TYPES`（标题栏 `#8a63d2` / 主体 `#241f38` / 描边 `#c4a6ff`，与本包其他节点一致）。
+- **一处安全降级（真实启动下行为不变）**：原版在 import 时直接读 `PromptServer.instance`，没有服务器时（离线测试 / CI）会 AttributeError 把整个包带崩；这里先判空再注册路由。
+- **兼容性**：后端只用标准库 + PIL（缩略图），前端单文件内联、无 npm 依赖。
+
 ## 中英双语
 
 - 节点标题与 Image Compare 面板按钮跟随 ComfyUI 界面语言自动切换（Settings → Language 选简体中文即显示中文）。
@@ -222,13 +258,14 @@ Set Image Variable（key=my_image，image=任意 IMAGE）→ 串在流程中
 | Set Image Alpha / Set Masked Alpha | torch | ComfyUI 自带 |
 | Color Calibrator | torch / numpy / **scipy（可选）** | `expand` > 32px 时用 scipy 半分辨率 EDT 加速膨胀；**未装 scipy 时自动退化为 GPU max_pool，结果一致、仅大半径略慢** |
 | Image Crop By Mask | torch | 纯索引裁切，ComfyUI 自带 |
+| Image Folder（批量出图） | 标准库 / PIL | 后端列目录、排序、读图、缩略图（PIL 由 ComfyUI 自带）；缩略图落盘缓存；前端单文件内联 |
 | Before/After Preview | torch | ComfyUI 自带 |
 | Image Compare A/B | 前端内联 | 面板预览纯浏览器 JS，零依赖 |
 | Label | 前端内联 | 前端画布自绘、双击编辑；后端仅注册空实现类，不参与执行 |
 
 ### 前端依赖
 
-无。5 个前端扩展（自动刷新 / 色条、对比面板、外观主题、双语、Label 标签）全部内联自包含，**不安装任何 npm 包**。
+无。7 个前端扩展（自动刷新 / 色条、对比面板、外观主题、双语、Label 标签、Set/Get 变量菜单、批量出图相册）全部内联自包含，**不安装任何 npm 包**。
 
 ### scipy 需要装吗？
 

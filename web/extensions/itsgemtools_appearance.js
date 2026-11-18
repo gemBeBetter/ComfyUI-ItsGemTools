@@ -25,6 +25,9 @@ const NODE_TYPES = new Set([
     "GemTiledUpscaleStitch",
     "GemColorCalibrator",
     "GemImageCropByMask",
+    "GemImageFolder",
+    "GemSaveImageAdvanced",
+    "Fast Groups Bypasser (ItsGemTools)",
 ]);
 
 const TITLE_COLOR = "#8a63d2"; // 标题栏：淡紫
